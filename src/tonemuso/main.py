@@ -91,11 +91,18 @@ def get_diff(tx1, tx2):
 def main():
     f = process_blocks(emulator_link=os.getenv("EMULATOR_PATH"))
 
+    server = {
+        "ip": int(os.getenv("LITESERVER_SERVER")),
+        "port": int(os.getenv("LITESERVER_PORT")),
+        "id": {
+            "@type": "pub.ed25519",
+            "key": os.getenv("LITESERVER_PUBKEY")
+        }
+    }
+
     lcparams = {
-        'mode': 'ordinary',
-        'host': os.getenv("LITESERVER_SERVER"),
-        'port': os.getenv("LITESERVER_PORT"),
-        'pubkey_base64': os.getenv("LITESERVER_PUBKEY"),
+        'mode': 'roundrobin',
+        'my_rr_servers': [server],
         'timeout': 1,
         'num_try': 3000,
         'threads': 1
