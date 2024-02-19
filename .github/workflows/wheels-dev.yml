@@ -30,7 +30,7 @@ jobs:
       - name: Download emulator
         run: |
           sudo apt update -y
-          sudo apt install -y wget
+          sudo apt install -y wget git
           wget https://dton.io/media/libemulator.so
           mv libemulator.so /tmp/libemulator.so
 
