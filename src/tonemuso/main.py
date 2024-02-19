@@ -1,3 +1,5 @@
+# Copyright (c) 2024 Disintar LLP Licensed under the Apache License Version 2.0
+
 from tonpy.blockscanner.blockscanner import *
 from deepdiff import DeepDiff
 from collections import Counter
@@ -90,8 +92,8 @@ def main():
     f = process_blocks(emulator_link=os.getenv("EMULATOR_PATH"))
 
     server = {
-        "ip": os.getenv("LITESERVER_SERVER"),
-        "port": os.getenv("LITESERVER_PORT"),
+        "ip": int(os.getenv("LITESERVER_SERVER")),
+        "port": int(os.getenv("LITESERVER_PORT")),
         "id": {
             "@type": "pub.ed25519",
             "key": os.getenv("LITESERVER_PUBKEY")
@@ -108,11 +110,13 @@ def main():
 
     lc = LiteClient(**lcparams)
     latest_seqno = lc.get_masterchain_info_ext().last.id.seqno
-    to_seqno = os.getenv("TO_SEQNO", latest_seqno)
+    to_seqno = int(os.getenv("TO_SEQNO", latest_seqno))
     from_seqno = os.getenv("FROM_SEQNO", None)
 
     if from_seqno is None:
-        from_seqno = to_seqno - os.getenv("TO_EMULATE_MC_BLOCKS", 10)
+        from_seqno = to_seqno - int(os.getenv("TO_EMULATE_MC_BLOCKS", 10))
+    else:
+        from_seqno = int(from_seqno)
 
     outq = Queue()
 
@@ -120,9 +124,9 @@ def main():
         lcparams=lcparams,
         start_from=from_seqno,
         load_to=to_seqno,
-        nproc=os.getenv("NPROC", 10),
+        nproc=int(os.getenv("NPROC", 10)),
         loglevel=1,
-        chunk_size=os.getenv("CHUNK_SIZE", 2),
+        chunk_size=int(os.getenv("CHUNK_SIZE", 2)),
         raw_process=f,
         out_queue=outq
     )
