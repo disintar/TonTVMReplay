@@ -1,3 +1,4 @@
 tonpy-dev==0.0.0.2.9b1
 deepdiff
 toolz
+requests
