@@ -47,9 +47,9 @@ jobs:
           LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
           LITESERVER_PUBKEY: ${{ secrets.LITESERVER_PUBKEY }}
           EMULATOR_PATH: "/tmp/libemulator.so"
-          TO_EMULATE_MC_BLOCKS: 100
+          TO_EMULATE_MC_BLOCKS: 1000
           NPROC: 40
-          CHUNK_SIZE: 10
+          CHUNK_SIZE: 1000
 
       - uses: actions/upload-artifact@v4
         with:
