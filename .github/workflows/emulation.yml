@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
+  emulation:
     name:
     runs-on: emuso
 
