@@ -18,7 +18,7 @@ permissions:
 jobs:
   deploy:
     name:
-    runs-on: tonemuso
+    runs-on: emuso
 
     steps:
       - uses: actions/setup-python@v3
@@ -35,7 +35,7 @@ jobs:
 
       - name: Run emulation
         run: |
-          tonemuso
+          touch failed_txs.json && tonemuso && mv ./failed_txs.json /tmp
         env:
           LITESERVER_SERVER: ${{ secrets.LITESERVER_SERVER }}
           LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
@@ -44,3 +44,8 @@ jobs:
           TO_EMULATE_MC_BLOCKS: 100
           NPROC: 40
           CHUNK_SIZE: 10
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: my-artifact
+          path: /tmp/failed_txs.json
