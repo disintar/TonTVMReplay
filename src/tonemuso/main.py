@@ -110,8 +110,8 @@ def main():
 
     lc = LiteClient(**lcparams)
     latest_seqno = lc.get_masterchain_info_ext().last.id.seqno
-    to_seqno = os.getenv("TO_SEQNO", latest_seqno)
-    from_seqno = os.getenv("FROM_SEQNO", None)
+    to_seqno = int(os.getenv("TO_SEQNO", latest_seqno))
+    from_seqno = int(os.getenv("FROM_SEQNO", None))
 
     if from_seqno is None:
         from_seqno = to_seqno - int(os.getenv("TO_EMULATE_MC_BLOCKS", 10))
@@ -122,9 +122,9 @@ def main():
         lcparams=lcparams,
         start_from=from_seqno,
         load_to=to_seqno,
-        nproc=os.getenv("NPROC", 10),
+        nproc=int(os.getenv("NPROC", 10)),
         loglevel=1,
-        chunk_size=os.getenv("CHUNK_SIZE", 2),
+        chunk_size=int(os.getenv("CHUNK_SIZE", 2)),
         raw_process=f,
         out_queue=outq
     )
