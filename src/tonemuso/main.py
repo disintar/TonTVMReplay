@@ -114,7 +114,7 @@ def main():
     from_seqno = os.getenv("FROM_SEQNO", None)
 
     if from_seqno is None:
-        from_seqno = to_seqno - os.getenv("TO_EMULATE_MC_BLOCKS", 10)
+        from_seqno = to_seqno - int(os.getenv("TO_EMULATE_MC_BLOCKS", 10))
 
     outq = Queue()
 
