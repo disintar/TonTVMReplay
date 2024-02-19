@@ -29,14 +29,19 @@ jobs:
 
       - name: Download emulator
         run: |
-          apt-get update && apt-get install -y wget && wget https://dton.io/media/libemulator.so && mv libemulator.so /tmp/libemulator.so
+          sudo apt update -y
+          sudo apt install -y wget
+          wget https://dton.io/media/libemulator.so
+          mv libemulator.so /tmp/libemulator.so
 
       - name: Install deps
         run: python -m pip install git+https://github.com/disintar/tonemuso.git
 
       - name: Run emulation
         run: |
-          touch failed_txs.json && tonemuso && mv ./failed_txs.json /tmp
+          touch failed_txs.json
+          tonemuso
+          mv ./failed_txs.json /tmp
         env:
           LITESERVER_SERVER: ${{ secrets.LITESERVER_SERVER }}
           LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
@@ -48,5 +53,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: my-artifact
+          name: failed_txs
           path: /tmp/failed_txs.json
