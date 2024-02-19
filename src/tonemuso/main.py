@@ -111,10 +111,12 @@ def main():
     lc = LiteClient(**lcparams)
     latest_seqno = lc.get_masterchain_info_ext().last.id.seqno
     to_seqno = int(os.getenv("TO_SEQNO", latest_seqno))
-    from_seqno = int(os.getenv("FROM_SEQNO", None))
+    from_seqno = os.getenv("FROM_SEQNO", None)
 
     if from_seqno is None:
         from_seqno = to_seqno - int(os.getenv("TO_EMULATE_MC_BLOCKS", 10))
+    else:
+        from_seqno = int(from_seqno)
 
     outq = Queue()
 
