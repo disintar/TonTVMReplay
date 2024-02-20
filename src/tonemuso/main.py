@@ -67,7 +67,7 @@ def process_blocks(chunk, emulator_link):
 
             # Update account state, go to next transaction
             account_state = em.account.to_cell()
-        out.append({'success': True})
+            out.append({'success': True})
 
     return out
 
