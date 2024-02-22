@@ -7,6 +7,22 @@ import json
 import os
 
 
+def get_diff(tx1, tx2):
+    tx1_tlb = Transaction()
+    tx1_tlb = tx1_tlb.cell_unpack(tx1, True).dump()
+
+    tx2_tlb = Transaction()
+    tx2_tlb = tx2_tlb.cell_unpack(tx2, True).dump()
+
+    diff = DeepDiff(tx1_tlb, tx2_tlb).to_dict()
+
+    address = tx1_tlb['account_addr']
+    del tx1_tlb
+    del tx2_tlb
+
+    return diff, address
+
+
 def process_blocks(chunk):
     out = []
 
@@ -70,22 +86,6 @@ def process_blocks(chunk):
                 out.append({'success': True})
 
     return out
-
-
-def get_diff(tx1, tx2):
-    tx1_tlb = Transaction()
-    tx1_tlb = tx1_tlb.cell_unpack(tx1, True).dump()
-
-    tx2_tlb = Transaction()
-    tx2_tlb = tx2_tlb.cell_unpack(tx2, True).dump()
-
-    diff = DeepDiff(tx1_tlb, tx2_tlb).to_dict()
-
-    address = tx1_tlb['account_addr']
-    del tx1_tlb
-    del tx2_tlb
-
-    return diff, address
 
 
 def process_result(outq):
@@ -185,7 +185,8 @@ def main():
         logger.error(cnt.most_common(5))
 
     with open("failed_txs.json", "w") as f:
-        json.dump(unsuccess, f)
+        # json.dump(unsuccess, f)
+        f.write(str(unsuccess))
 
 
 if __name__ == '__main__':
