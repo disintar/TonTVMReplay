@@ -3,20 +3,23 @@
 from tonpy.blockscanner.blockscanner import *
 from deepdiff import DeepDiff
 from collections import Counter
-from toolz import curry
 import json
 import os
 
 
-@curry
-def process_blocks(chunk, emulator_link):
+def process_blocks(chunk):
     out = []
+    loglevel = os.getenv('EMUSO_LOGLEVEL', 1)
+
+    if loglevel > 1:
+        chunk = tqdm(chunk)
+        logger.info(f"Start emulate chunk: {len(chunk)}, TXs: {sum([len(i[2]) for i in chunk])}")
 
     for data in chunk:
         block, account_state, txs = data
         config = block['key_block']['config']
 
-        em = EmulatorExtern(emulator_link, config)
+        em = EmulatorExtern(os.getenv("EMULATOR_PATH"), config)
 
         em.set_rand_seed(block['rand_seed'])
         block['prev_block_data'][0] = list(reversed(block['prev_block_data']))
@@ -91,8 +94,6 @@ def get_diff(tx1, tx2):
 
 
 def main():
-    f = process_blocks(emulator_link=os.getenv("EMULATOR_PATH"))
-
     server = {
         "ip": int(os.getenv("LITESERVER_SERVER")),
         "port": int(os.getenv("LITESERVER_PORT")),
@@ -129,7 +130,7 @@ def main():
         nproc=int(os.getenv("NPROC", 10)),
         loglevel=int(os.getenv("EMUSO_LOGLEVEL", 1)),
         chunk_size=int(os.getenv("CHUNK_SIZE", 2)),
-        raw_process=f,
+        raw_process=process_blocks,
         out_queue=outq,
         only_mc_blocks=bool(os.getenv("ONLYMC_BLOCK", False))
     )
