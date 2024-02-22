@@ -51,23 +51,25 @@ def process_blocks(chunk, emulator_link):
                     now,
                     lt)
 
+            go_as_success = True
             if not success:
                 tx1_tlb = Transaction()
                 tx1_tlb = tx1_tlb.cell_unpack(tx['tx'], True).dump()
-
+                go_as_success = False
                 out.append({'success': False, 'expected': tx['tx'].get_hash(), 'address': tx1_tlb['account_addr'],
                             'cant_emulate': True})
 
             # Emulation transaction equal current transaction
             if em.transaction.get_hash() != tx['tx'].get_hash():
                 diff, address = get_diff(tx['tx'], em.transaction.to_cell())
-
+                go_as_success = False
                 out.append({'success': False, 'diff': diff, 'address': f"{block['block_id'].id.workchain}:{address}",
                             'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash()})
 
             # Update account state, go to next transaction
             account_state = em.account.to_cell()
-            out.append({'success': True})
+            if go_as_success:
+                out.append({'success': True})
 
     return out
 
@@ -125,10 +127,11 @@ def main():
         start_from=from_seqno,
         load_to=to_seqno,
         nproc=int(os.getenv("NPROC", 10)),
-        loglevel=1,
+        loglevel=int(os.getenv("EMUSO_LOGLEVEL", 1)),
         chunk_size=int(os.getenv("CHUNK_SIZE", 2)),
         raw_process=f,
-        out_queue=outq
+        out_queue=outq,
+        only_mc_blocks=bool(os.getenv("ONLYMC_BLOCK", False))
     )
 
     scanner.start()

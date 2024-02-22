@@ -37,6 +37,22 @@ jobs:
       - name: Install deps
         run: python -m pip install git+https://github.com/disintar/tonemuso.git
 
+      - name: Run emulation only MC
+        run: |
+          touch failed_txs.json
+          tonemuso
+          mv ./failed_txs.json /tmp
+        env:
+          LITESERVER_SERVER: ${{ secrets.LITESERVER_SERVER }}
+          LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
+          LITESERVER_PUBKEY: ${{ secrets.LITESERVER_PUBKEY }}
+          EMULATOR_PATH: "/tmp/libemulator.so"
+          TO_EMULATE_MC_BLOCKS: 1000
+          NPROC: 40
+          CHUNK_SIZE: 1000
+          ONLYMC_BLOCK: 1
+          EMUSO_LOGLEVEL: 2
+
       - name: Run emulation
         run: |
           touch failed_txs.json

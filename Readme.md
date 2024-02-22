@@ -9,3 +9,5 @@
 7. `TO_EMULATE_MC_BLOCKS` [OPTIONAL] - Number of blocks from latest to emulate, 10 by default
 8. `NPROC` [OPTIONAL] - Number of process to start (more process, more CPU & RAM load), 10 by default
 9. `CHUNK_SIZE` [OPTIONAL] - Number of MC block to load and emulate by 1 iteration (2 by default)
+10. `ONLYMC_BLOCK` [OPTIONAL] - Emulate only MC blocks, (false by default)
+11. `EMUSO_LOGLEVEL` [OPTIONAL] - 0 - no logs, 1 - logs per chunks, 2 - tqdm logs (1 by default)
