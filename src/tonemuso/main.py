@@ -9,11 +9,6 @@ import os
 
 def process_blocks(chunk):
     out = []
-    loglevel = int(os.getenv('EMUSO_LOGLEVEL', 1))
-
-    if loglevel > 1:
-        chunk = tqdm(chunk)
-        logger.info(f"Start emulate chunk: {len(chunk)}, TXs: {sum([len(i[2]) for i in chunk])}")
 
     for data in chunk:
         block, account_state, txs = data
@@ -93,6 +88,34 @@ def get_diff(tx1, tx2):
     return diff, address
 
 
+def process_result(outq):
+    total_txs = []
+    while not outq.empty():
+        total_txs.append(outq.get())
+
+    tmp_s = 0
+    tmp_u = []
+    if len(total_txs) > 0:
+        for chunk in total_txs:
+            for i in chunk:
+                if i['success']:
+                    tmp_s += 1
+                else:
+                    tmp_u.append(i)
+
+        logger.warning(f"Emulator status: {tmp_s} success, {len(tmp_u)} unsuccess")
+
+        if len(tmp_u) > 0:
+            cnt = Counter()
+            for i in tmp_u:
+                cnt[i['address']] += 1
+
+            logger.error(f"Unique addreses errors: {len(cnt)}, most common: ")
+            logger.error(cnt.most_common(5))
+
+    return tmp_s, tmp_u
+
+
 def main():
     server = {
         "ip": int(os.getenv("LITESERVER_SERVER")),
@@ -141,35 +164,15 @@ def main():
     unsuccess = []
 
     while not scanner.done:
-        total_txs = []
-
-        if not outq.empty():
-            total_txs.append(outq.get())
-
-        if len(total_txs) > 0:
-            tmp_s = 0
-            tmp_u = []
-            for chunk in total_txs:
-                for i in chunk:
-                    if i['success']:
-                        tmp_s += 1
-                    else:
-                        tmp_u.append(i)
-
-            logger.warning(f"Emulator status: {tmp_s} success, {len(tmp_u)} unsuccess")
-
-            if len(tmp_u) > 0:
-                cnt = Counter()
-                for i in tmp_u:
-                    cnt[i['address']] += 1
-
-                logger.error(f"Unique addreses errors: {len(cnt)}, most common: ")
-                logger.error(cnt.most_common(5))
-
-            success += tmp_s
-            unsuccess.extend(tmp_u)
-
+        tmp_s, tmp_u = process_result(outq)
+        success += tmp_s
+        unsuccess.extend(tmp_u)
         sleep(1)
+
+    # After done some data can be in queue
+    tmp_s, tmp_u = process_result(outq)
+    success += tmp_s
+    unsuccess.extend(tmp_u)
 
     logger.warning(f"Final emulator status: {success} success, {len(unsuccess)} unsuccess")
 
