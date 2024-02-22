@@ -14,7 +14,7 @@ def get_diff(tx1, tx2):
     tx2_tlb = Transaction()
     tx2_tlb = tx2_tlb.cell_unpack(tx2, True).dump()
 
-    diff = DeepDiff(tx1_tlb, tx2_tlb).to_dict()
+    diff = DeepDiff(tx1_tlb, tx2_tlb).to_json()
 
     address = tx1_tlb['account_addr']
     del tx1_tlb
@@ -185,8 +185,7 @@ def main():
         logger.error(cnt.most_common(5))
 
     with open("failed_txs.json", "w") as f:
-        # json.dump(unsuccess, f)
-        f.write(str(unsuccess))
+        json.dump(unsuccess, f)
 
 
 if __name__ == '__main__':
