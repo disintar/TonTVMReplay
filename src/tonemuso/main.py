@@ -9,7 +9,7 @@ import os
 
 def process_blocks(chunk):
     out = []
-    loglevel = os.getenv('EMUSO_LOGLEVEL', 1)
+    loglevel = int(os.getenv('EMUSO_LOGLEVEL', 1))
 
     if loglevel > 1:
         chunk = tqdm(chunk)
