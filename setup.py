@@ -11,7 +11,7 @@ with open(f"requirements.txt", encoding="utf-8") as fh:
 
 setup(
     name="tonemuso",
-    version="0.0.0.0.1b0",
+    version="0.0.0.0.1c0",
     author="Disintar LLP",
     author_email="andrey@head-labs.com",
     description="Emulate TON blockchain",
