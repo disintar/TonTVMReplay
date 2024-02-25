@@ -37,7 +37,7 @@ jobs:
       - name: Install deps
         run: python -m pip install git+https://github.com/disintar/tonemuso.git
 
-      - name: Run emulation only MC
+      - name: LS - Run emulation only MC
         run: |
           touch failed_txs.json
           tonemuso
@@ -47,13 +47,15 @@ jobs:
           LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
           LITESERVER_PUBKEY: ${{ secrets.LITESERVER_PUBKEY }}
           EMULATOR_PATH: "/tmp/libemulator.so"
-          TO_EMULATE_MC_BLOCKS: 1000
-          NPROC: 16
+          NPROC: 40
+          FROM_SEQNO: 36305863
+          TO_SEQNO: 36306863
           CHUNK_SIZE: 1000
+          PARSE_OVER_LS: 1
           ONLYMC_BLOCK: 1
           EMUSO_LOGLEVEL: 2
 
-      - name: Run emulation
+      - name: BLOCK - Run emulation only MC
         run: |
           touch failed_txs.json
           tonemuso
@@ -63,11 +65,31 @@ jobs:
           LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
           LITESERVER_PUBKEY: ${{ secrets.LITESERVER_PUBKEY }}
           EMULATOR_PATH: "/tmp/libemulator.so"
-          TO_EMULATE_MC_BLOCKS: 1000
-          NPROC: 16
+          NPROC: 40
+          FROM_SEQNO: 36305863
+          TO_SEQNO: 36306863
+          CHUNK_SIZE: 1000
+          PARSE_OVER_LS: 0
+          ONLYMC_BLOCK: 1
+          EMUSO_LOGLEVEL: 2
+
+      - name: LS - Run emulation
+        run: |
+          touch failed_txs.json
+          tonemuso
+          mv ./failed_txs.json /tmp
+        env:
+          LITESERVER_SERVER: ${{ secrets.LITESERVER_SERVER }}
+          LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
+          LITESERVER_PUBKEY: ${{ secrets.LITESERVER_PUBKEY }}
+          EMULATOR_PATH: "/tmp/libemulator.so"
+          FROM_SEQNO: 36305863
+          TO_SEQNO: 36306863
+          PARSE_OVER_LS: 1
+          NPROC: 40
           CHUNK_SIZE: 1000
 
-      - name: 50k
+      - name: BLOCK - Run emulation
         run: |
           touch failed_txs.json
           tonemuso
@@ -77,8 +99,42 @@ jobs:
           LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
           LITESERVER_PUBKEY: ${{ secrets.LITESERVER_PUBKEY }}
           EMULATOR_PATH: "/tmp/libemulator.so"
-          TO_EMULATE_MC_BLOCKS: 50000
-          NPROC: 16
+          FROM_SEQNO: 36305863
+          TO_SEQNO: 36306862
+          PARSE_OVER_LS: 0
+          NPROC: 40
+          CHUNK_SIZE: 1000
+
+      - name: BLOCK - 50k
+        run: |
+          touch failed_txs.json
+          tonemuso
+          mv ./failed_txs.json /tmp
+        env:
+          LITESERVER_SERVER: ${{ secrets.LITESERVER_SERVER }}
+          LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
+          LITESERVER_PUBKEY: ${{ secrets.LITESERVER_PUBKEY }}
+          EMULATOR_PATH: "/tmp/libemulator.so"
+          FROM_SEQNO: 36256863
+          TO_SEQNO: 36306863
+          PARSE_OVER_LS: 0
+          NPROC: 40
+          CHUNK_SIZE: 2000
+
+      - name: LS - 50k
+        run: |
+          touch failed_txs.json
+          tonemuso
+          mv ./failed_txs.json /tmp
+        env:
+          LITESERVER_SERVER: ${{ secrets.LITESERVER_SERVER }}
+          LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
+          LITESERVER_PUBKEY: ${{ secrets.LITESERVER_PUBKEY }}
+          EMULATOR_PATH: "/tmp/libemulator.so"
+          FROM_SEQNO: 36256863
+          TO_SEQNO: 36306863
+          PARSE_OVER_LS: 1
+          NPROC: 40
           CHUNK_SIZE: 2000
 
       - uses: actions/upload-artifact@v4

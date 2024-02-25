@@ -155,7 +155,8 @@ def main():
         chunk_size=int(os.getenv("CHUNK_SIZE", 2)),
         raw_process=process_blocks,
         out_queue=outq,
-        only_mc_blocks=bool(os.getenv("ONLYMC_BLOCK", False))
+        only_mc_blocks=bool(os.getenv("ONLYMC_BLOCK", False)),
+        parse_txs_over_ls=bool(os.getenv("PARSE_OVER_LS", False))
     )
 
     scanner.start()
