@@ -25,67 +25,65 @@ def get_diff(tx1, tx2):
     return diff, address
 
 
-def process_blocks(chunk):
+def process_blocks(data):
     out = []
+    block, account_state, txs = data
+    config = block['key_block']['config']
 
-    for data in chunk:
-        block, account_state, txs = data
-        config = block['key_block']['config']
+    em = EmulatorExtern(os.getenv("EMULATOR_PATH"), config)
 
-        em = EmulatorExtern(os.getenv("EMULATOR_PATH"), config)
+    em.set_rand_seed(block['rand_seed'])
+    block['prev_block_data'][0] = list(reversed(block['prev_block_data']))
+    em.set_prev_blocks_info(block['prev_block_data'])
+    em.set_libs(VmDict(256, False, cell_root=Cell(block['libs'])))
 
-        em.set_rand_seed(block['rand_seed'])
-        block['prev_block_data'][0] = list(reversed(block['prev_block_data']))
-        em.set_prev_blocks_info(block['prev_block_data'])
-        em.set_libs(VmDict(256, False, cell_root=Cell(block['libs'])))
+    for tx in txs:
+        current_tx_cs = tx['tx'].begin_parse()
+        lt = tx['lt']
+        now = tx['now']
+        is_tock = tx['is_tock']
 
-        for tx in txs:
-            current_tx_cs = tx['tx'].begin_parse()
-            lt = tx['lt']
-            now = tx['now']
-            is_tock = tx['is_tock']
+        tmp = current_tx_cs.load_ref(as_cs=True)
 
-            tmp = current_tx_cs.load_ref(as_cs=True)
+        if tmp.load_bool():
+            in_msg = tmp.load_ref()
+        else:
+            in_msg = None
 
-            if tmp.load_bool():
-                in_msg = tmp.load_ref()
-            else:
-                in_msg = None
+        if in_msg is None:
+            success = em.emulate_tick_tock_transaction(
+                account_state,
+                is_tock,
+                now,
+                lt
+            )
+        else:
+            # Emulate
+            success = em.emulate_transaction(
+                account_state,
+                in_msg,
+                now,
+                lt)
 
-            if in_msg is None:
-                success = em.emulate_tick_tock_transaction(
-                    account_state,
-                    is_tock,
-                    now,
-                    lt
-                )
-            else:
-                # Emulate
-                success = em.emulate_transaction(
-                    account_state,
-                    in_msg,
-                    now,
-                    lt)
+        go_as_success = True
+        if not success:
+            tx1_tlb = Transaction()
+            tx1_tlb = tx1_tlb.cell_unpack(tx['tx'], True).dump()
+            go_as_success = False
+            out.append({'success': False, 'expected': tx['tx'].get_hash(), 'address': tx1_tlb['account_addr'],
+                        'cant_emulate': True})
 
-            go_as_success = True
-            if not success:
-                tx1_tlb = Transaction()
-                tx1_tlb = tx1_tlb.cell_unpack(tx['tx'], True).dump()
-                go_as_success = False
-                out.append({'success': False, 'expected': tx['tx'].get_hash(), 'address': tx1_tlb['account_addr'],
-                            'cant_emulate': True})
+        # Emulation transaction equal current transaction
+        if em.transaction.get_hash() != tx['tx'].get_hash():
+            diff, address = get_diff(tx['tx'], em.transaction.to_cell())
+            go_as_success = False
+            out.append({'success': False, 'diff': diff, 'address': f"{block['block_id'].id.workchain}:{address}",
+                        'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash()})
 
-            # Emulation transaction equal current transaction
-            if em.transaction.get_hash() != tx['tx'].get_hash():
-                diff, address = get_diff(tx['tx'], em.transaction.to_cell())
-                go_as_success = False
-                out.append({'success': False, 'diff': diff, 'address': f"{block['block_id'].id.workchain}:{address}",
-                            'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash()})
-
-            # Update account state, go to next transaction
-            account_state = em.account.to_cell()
-            if go_as_success:
-                out.append({'success': True})
+        # Update account state, go to next transaction
+        account_state = em.account.to_cell()
+        if go_as_success:
+            out.append({'success': True})
 
     return out
 
