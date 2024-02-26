@@ -44,13 +44,7 @@ def process_blocks(data):
 
     em.set_rand_seed(block['rand_seed'])
     block['prev_block_data'][0] = list(reversed(block['prev_block_data']))
-    try:
-
-        em.set_prev_blocks_info(block['prev_block_data'])
-    except Exception as e:
-        print(e, block['prev_block_data'])
-        raise ValueError(e)
-
+    em.set_prev_blocks_info(block['prev_block_data'])
     em.set_libs(VmDict(256, False, cell_root=Cell(block['libs'])))
 
     for tx in txs:
@@ -100,6 +94,10 @@ def process_blocks(data):
         account_state = em.account.to_cell()
         if go_as_success:
             out.append({'success': True})
+
+    del block
+    del account_state
+    del txs
 
     return out
 
