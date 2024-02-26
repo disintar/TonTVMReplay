@@ -19,6 +19,7 @@ jobs:
   emulation:
     name:
     runs-on: emuso
+    timeout-minutes: 1440
 
     steps:
       - uses: actions/setup-python@v3
@@ -105,22 +106,6 @@ jobs:
           NPROC: 40
           CHUNK_SIZE: 1000
 
-      - name: BLOCK - 50k
-        run: |
-          touch failed_txs.json
-          tonemuso
-          mv ./failed_txs.json /tmp
-        env:
-          LITESERVER_SERVER: ${{ secrets.LITESERVER_SERVER }}
-          LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
-          LITESERVER_PUBKEY: ${{ secrets.LITESERVER_PUBKEY }}
-          EMULATOR_PATH: "/tmp/libemulator.so"
-          FROM_SEQNO: 36256863
-          TO_SEQNO: 36306863
-          PARSE_OVER_LS: 0
-          NPROC: 40
-          CHUNK_SIZE: 500
-
       - name: LS - 50k
         run: |
           touch failed_txs.json
@@ -135,7 +120,23 @@ jobs:
           TO_SEQNO: 36306863
           PARSE_OVER_LS: 1
           NPROC: 40
-          CHUNK_SIZE: 500
+          CHUNK_SIZE: 1000
+
+      - name: BLOCK - 50k
+        run: |
+          touch failed_txs.json
+          tonemuso
+          mv ./failed_txs.json /tmp
+        env:
+          LITESERVER_SERVER: ${{ secrets.LITESERVER_SERVER }}
+          LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
+          LITESERVER_PUBKEY: ${{ secrets.LITESERVER_PUBKEY }}
+          EMULATOR_PATH: "/tmp/libemulator.so"
+          FROM_SEQNO: 36256863
+          TO_SEQNO: 36306863
+          PARSE_OVER_LS: 0
+          NPROC: 40
+          CHUNK_SIZE: 1000
 
       - uses: actions/upload-artifact@v4
         with:
