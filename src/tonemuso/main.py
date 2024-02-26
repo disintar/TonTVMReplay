@@ -35,6 +35,7 @@ def process_blocks(data):
     em.set_rand_seed(block['rand_seed'])
     block['prev_block_data'][0] = list(reversed(block['prev_block_data']))
     try:
+        print(len(block['prev_block_data']), len(block['prev_block_data'][0]))
         em.set_prev_blocks_info(block['prev_block_data'])
     except Exception as e:
         print(e, block['prev_block_data'])
