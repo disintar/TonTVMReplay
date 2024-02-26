@@ -25,23 +25,12 @@ def get_diff(tx1, tx2):
     return diff, address
 
 
-def lisp_length(lst):
-    if not lst:  # if the list is empty
-        return 0
-    elif isinstance(lst, (tuple, list)):
-        return 1 + sum(lisp_length(item) for item in lst)
-    else:
-        return 1
-
-
 def process_blocks(data):
     out = []
     block, account_state, txs = data
     config = block['key_block']['config']
 
     em = EmulatorExtern(os.getenv("EMULATOR_PATH"), config)
-    print(lisp_length(block['prev_block_data']))
-
     em.set_rand_seed(block['rand_seed'])
     prev_block_data = [list(reversed(block['prev_block_data'][0])), block['prev_block_data'][1]]
     em.set_prev_blocks_info(prev_block_data)
