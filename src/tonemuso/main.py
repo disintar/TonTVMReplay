@@ -153,7 +153,7 @@ def main():
         nproc=int(os.getenv("NPROC", 10)),
         loglevel=LOGLEVEL,
         chunk_size=int(os.getenv("CHUNK_SIZE", 2)),
-        tx_chunk_size=int(os.getenv("TX_CHUNK_SIZE", 2)),
+        tx_chunk_size=int(os.getenv("TX_CHUNK_SIZE", 40000)),
         raw_process=process_blocks,
         out_queue=outq,
         only_mc_blocks=bool(os.getenv("ONLYMC_BLOCK", False)),

@@ -55,6 +55,7 @@ jobs:
           PARSE_OVER_LS: 1
           ONLYMC_BLOCK: 1
           EMUSO_LOGLEVEL: 2
+          TX_CHUNK_SIZE: 300
 
       - name: BLOCK - Run emulation only MC
         run: |
@@ -73,6 +74,7 @@ jobs:
           PARSE_OVER_LS: 0
           ONLYMC_BLOCK: 1
           EMUSO_LOGLEVEL: 2
+          TX_CHUNK_SIZE: 1000
 
       - name: LS - Run emulation
         run: |
@@ -89,6 +91,7 @@ jobs:
           PARSE_OVER_LS: 1
           NPROC: 40
           CHUNK_SIZE: 1000
+          TX_CHUNK_SIZE: 1000
 
       - name: BLOCK - Run emulation
         run: |
@@ -105,6 +108,7 @@ jobs:
           PARSE_OVER_LS: 0
           NPROC: 40
           CHUNK_SIZE: 1000
+          TX_CHUNK_SIZE: 1000
 
       - name: LS - 50k
         run: |
@@ -121,6 +125,7 @@ jobs:
           PARSE_OVER_LS: 1
           NPROC: 40
           CHUNK_SIZE: 5000
+          TX_CHUNK_SIZE: 40000
 
       - name: BLOCK - 50k
         run: |
@@ -137,6 +142,7 @@ jobs:
           PARSE_OVER_LS: 0
           NPROC: 40
           CHUNK_SIZE: 5000
+          TX_CHUNK_SIZE: 40000
 
       - uses: actions/upload-artifact@v4
         with:
