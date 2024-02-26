@@ -39,6 +39,7 @@ def process_blocks(data):
     except Exception as e:
         print(e, block['prev_block_data'])
         raise ValueError(e)
+
     em.set_libs(VmDict(256, False, cell_root=Cell(block['libs'])))
 
     for tx in txs:
