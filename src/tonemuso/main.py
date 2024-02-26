@@ -6,6 +6,8 @@ from collections import Counter
 import json
 import os
 
+LOGLEVEL = int(os.getenv("EMUSO_LOGLEVEL", 1))
+
 
 def get_diff(tx1, tx2):
     tx1_tlb = Transaction()
@@ -103,9 +105,10 @@ def process_result(outq):
                 else:
                     tmp_u.append(i)
 
-        logger.warning(f"Emulator status: {tmp_s} success, {len(tmp_u)} unsuccess")
+        if LOGLEVEL > 1:
+            logger.warning(f"Emulator status: {tmp_s} success, {len(tmp_u)} unsuccess")
 
-        if len(tmp_u) > 0:
+        if len(tmp_u) > 0 and LOGLEVEL > 1:
             cnt = Counter()
             for i in tmp_u:
                 cnt[i['address']] += 1
@@ -151,8 +154,9 @@ def main():
         start_from=from_seqno,
         load_to=to_seqno,
         nproc=int(os.getenv("NPROC", 10)),
-        loglevel=int(os.getenv("EMUSO_LOGLEVEL", 1)),
+        loglevel=LOGLEVEL,
         chunk_size=int(os.getenv("CHUNK_SIZE", 2)),
+        tx_chunk_size=int(os.getenv("TX_CHUNK_SIZE", 2)),
         raw_process=process_blocks,
         out_queue=outq,
         only_mc_blocks=bool(os.getenv("ONLYMC_BLOCK", False)),
