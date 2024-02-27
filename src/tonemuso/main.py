@@ -71,7 +71,7 @@ def process_blocks(data, config_override: dict = None):
                 lt)
 
         go_as_success = True
-        if not success:
+        if not success or em.transaction is None:
             tx1_tlb = Transaction()
             tx1_tlb = tx1_tlb.cell_unpack(tx['tx'], True).dump()
             go_as_success = False
