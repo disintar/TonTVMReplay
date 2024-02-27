@@ -36,11 +36,6 @@ def process_blocks(data, config_override: dict = None):
         for param in config_override:
             config.set(int(param), begin_cell().store_ref(Cell(config_override[param])).end_cell().begin_parse())
 
-    config = VmDict(256, False, cell_root=Cell(block['libs']))
-    if config_override is not None and len(config_override) > 0:
-        for param in config_override:
-            config.set(param, CellSlice(config_override[param]))
-
     em = EmulatorExtern(os.getenv("EMULATOR_PATH"), config)
     em.set_rand_seed(block['rand_seed'])
     prev_block_data = [list(reversed(block['prev_block_data'][0])), block['prev_block_data'][1]]
