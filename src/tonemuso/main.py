@@ -34,7 +34,7 @@ def process_blocks(data, config_override: dict = None):
 
     if config_override is not None:
         for param in config_override:
-            config.set(int(param), begin_cell().store_ref(Cell(config_override[param])).end_cell())
+            config.set(int(param), begin_cell().store_ref(Cell(config_override[param])).end_cell().begin_parse())
 
     config = VmDict(256, False, cell_root=Cell(block['libs']))
     if config_override is not None and len(config_override) > 0:
