@@ -30,7 +30,7 @@ def get_diff(tx1, tx2):
 def process_blocks(data, config_override: dict = None):
     out = []
     block, account_state, txs = data
-    config: VmDict = block['key_block']['config']
+    config: VmDict = VmDict(32, False, block['key_block']['config'])
 
     if config_override is not None:
         for param in config_override:
