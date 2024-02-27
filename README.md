@@ -12,3 +12,4 @@
 10. `EMUSO_LOGLEVEL` [OPTIONAL] - 0 - disabled, 1 - per chunk, 2 - tqdm (1 by default)
 11. `ONLYMC_BLOCK` [OPTIONAL] - Emulate only MC blocks (false by default)
 12. `TX_CHUNK_SIZE` [OPTIONAL] - Num of TXs emulated by 1 iteration (40k is good, if <32gb ram - consider to use lower
+13. `C7_REWRITE` [OPTIONAL] - `{1: "base64 boc"}` json to override C7 params

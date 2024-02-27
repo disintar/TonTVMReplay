@@ -56,6 +56,7 @@ jobs:
           ONLYMC_BLOCK: 1
           EMUSO_LOGLEVEL: 2
           TX_CHUNK_SIZE: 10000
+          C7_REWRITE: '{20: "te6ccuEBAQEAQgCEAIAAAAAAAAAA3gAAAAAAAAAAAAAAAACYloAAAAAAAJiWgAAAAAAF9eEA//////////8AAAAAAAAAAAAAAAAAAAAA+x+wzw==", 21: "te6ccuEBAQEAQgCEAIAAAAAAAAAA3gAAAAAAAAAAAAAAAACYloAAAAAAAJiWgAAAAAAF9eEA//////////8AAAAAAAAAAAAAAAAAAAAA+x+wzw=="}'
 
       - name: BLOCK - Run emulation only MC
         run: |
@@ -75,6 +76,7 @@ jobs:
           ONLYMC_BLOCK: 1
           EMUSO_LOGLEVEL: 2
           TX_CHUNK_SIZE: 10000
+          C7_REWRITE: '{20: "te6ccuEBAQEAQgCEAIAAAAAAAAAA3gAAAAAAAAAAAAAAAACYloAAAAAAAJiWgAAAAAAF9eEA//////////8AAAAAAAAAAAAAAAAAAAAA+x+wzw==", 21: "te6ccuEBAQEAQgCEAIAAAAAAAAAA3gAAAAAAAAAAAAAAAACYloAAAAAAAJiWgAAAAAAF9eEA//////////8AAAAAAAAAAAAAAAAAAAAA+x+wzw=="}'
 
       - name: LS - Run emulation
         run: |
@@ -124,8 +126,8 @@ jobs:
           TO_SEQNO: 36306863
           PARSE_OVER_LS: 1
           NPROC: 40
-          CHUNK_SIZE: 5000
-          TX_CHUNK_SIZE: 10000
+          CHUNK_SIZE: 1000
+          TX_CHUNK_SIZE: 40000
 
       - name: BLOCK - 50k
         run: |
@@ -141,8 +143,8 @@ jobs:
           TO_SEQNO: 36306863
           PARSE_OVER_LS: 0
           NPROC: 40
-          CHUNK_SIZE: 5000
-          TX_CHUNK_SIZE: 10000
+          CHUNK_SIZE: 1000
+          TX_CHUNK_SIZE: 40000
 
       - uses: actions/upload-artifact@v4
         with:

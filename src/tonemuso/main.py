@@ -2,6 +2,7 @@
 
 from tonpy.blockscanner.blockscanner import *
 from deepdiff import DeepDiff
+from tonpy import begin_cell
 from collections import Counter
 import json
 import os
@@ -25,10 +26,20 @@ def get_diff(tx1, tx2):
     return diff, address
 
 
-def process_blocks(data):
+@curry
+def process_blocks(data, config_override: dict = None):
     out = []
     block, account_state, txs = data
-    config = block['key_block']['config']
+    config: VmDict = block['key_block']['config']
+
+    if config_override is not None:
+        for param in config_override:
+            config.set(param, begin_cell().store_ref(Cell(config_override[param])).end_cell())
+
+    config = VmDict(256, False, cell_root=Cell(block['libs']))
+    if config_override is not None and len(config_override) > 0:
+        for param in config_override:
+            config.set(param, CellSlice(config_override[param]))
 
     em = EmulatorExtern(os.getenv("EMULATOR_PATH"), config)
     em.set_rand_seed(block['rand_seed'])
@@ -145,6 +156,9 @@ def main():
         from_seqno = int(from_seqno)
 
     outq = Queue()
+    config_override = os.getenv("C7_REWRITE", None)
+    if config_override is not None:
+        config_override = json.loads(config_override)
 
     scanner = BlockScanner(
         lcparams=lcparams,
@@ -154,7 +168,7 @@ def main():
         loglevel=LOGLEVEL,
         chunk_size=int(os.getenv("CHUNK_SIZE", 2)),
         tx_chunk_size=int(os.getenv("TX_CHUNK_SIZE", 40000)),
-        raw_process=process_blocks,
+        raw_process=process_blocks(config_override=config_override),
         out_queue=outq,
         only_mc_blocks=bool(os.getenv("ONLYMC_BLOCK", False)),
         parse_txs_over_ls=bool(os.getenv("PARSE_OVER_LS", False))
