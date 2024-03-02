@@ -17,13 +17,13 @@ def get_diff(tx1, tx2):
     tx2_tlb = Transaction()
     tx2_tlb = tx2_tlb.cell_unpack(tx2, True).dump()
 
-    diff = DeepDiff(tx1_tlb, tx2_tlb).to_json()
+    diff = DeepDiff(tx1_tlb, tx2_tlb).to_dict()
 
     address = tx1_tlb['account_addr']
     del tx1_tlb
     del tx2_tlb
 
-    return diff, address
+    return str(diff), address
 
 
 @curry
