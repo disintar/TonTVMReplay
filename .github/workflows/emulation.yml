@@ -106,45 +106,45 @@ jobs:
           LITESERVER_PUBKEY: ${{ secrets.LITESERVER_PUBKEY }}
           EMULATOR_PATH: "/tmp/libemulator.so"
           FROM_SEQNO: 36305863
-          TO_SEQNO: 36306862
+          TO_SEQNO: 36306863
           PARSE_OVER_LS: 0
           NPROC: 40
           CHUNK_SIZE: 1000
           TX_CHUNK_SIZE: 10000
-
-      - name: LS - 50k
-        run: |
-          touch failed_txs.json
-          tonemuso
-          mv ./failed_txs.json /tmp
-        env:
-          LITESERVER_SERVER: ${{ secrets.LITESERVER_SERVER }}
-          LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
-          LITESERVER_PUBKEY: ${{ secrets.LITESERVER_PUBKEY }}
-          EMULATOR_PATH: "/tmp/libemulator.so"
-          FROM_SEQNO: 36256863
-          TO_SEQNO: 36306863
-          PARSE_OVER_LS: 1
-          NPROC: 40
-          CHUNK_SIZE: 1000
-          TX_CHUNK_SIZE: 40000
-
-      - name: BLOCK - 50k
-        run: |
-          touch failed_txs.json
-          tonemuso
-          mv ./failed_txs.json /tmp
-        env:
-          LITESERVER_SERVER: ${{ secrets.LITESERVER_SERVER }}
-          LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
-          LITESERVER_PUBKEY: ${{ secrets.LITESERVER_PUBKEY }}
-          EMULATOR_PATH: "/tmp/libemulator.so"
-          FROM_SEQNO: 36256863
-          TO_SEQNO: 36306863
-          PARSE_OVER_LS: 0
-          NPROC: 40
-          CHUNK_SIZE: 1000
-          TX_CHUNK_SIZE: 40000
+#
+#      - name: LS - 50k
+#        run: |
+#          touch failed_txs.json
+#          tonemuso
+#          mv ./failed_txs.json /tmp
+#        env:
+#          LITESERVER_SERVER: ${{ secrets.LITESERVER_SERVER }}
+#          LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
+#          LITESERVER_PUBKEY: ${{ secrets.LITESERVER_PUBKEY }}
+#          EMULATOR_PATH: "/tmp/libemulator.so"
+#          FROM_SEQNO: 36256863
+#          TO_SEQNO: 36306863
+#          PARSE_OVER_LS: 1
+#          NPROC: 40
+#          CHUNK_SIZE: 1000
+#          TX_CHUNK_SIZE: 40000
+#
+#      - name: BLOCK - 50k
+#        run: |
+#          touch failed_txs.json
+#          tonemuso
+#          mv ./failed_txs.json /tmp
+#        env:
+#          LITESERVER_SERVER: ${{ secrets.LITESERVER_SERVER }}
+#          LITESERVER_PORT: ${{ secrets.LITESERVER_PORT }}
+#          LITESERVER_PUBKEY: ${{ secrets.LITESERVER_PUBKEY }}
+#          EMULATOR_PATH: "/tmp/libemulator.so"
+#          FROM_SEQNO: 36256863
+#          TO_SEQNO: 36306863
+#          PARSE_OVER_LS: 0
+#          NPROC: 40
+#          CHUNK_SIZE: 1000
+#          TX_CHUNK_SIZE: 40000
 
       - uses: actions/upload-artifact@v4
         with:

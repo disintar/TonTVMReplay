@@ -10,7 +10,7 @@ with open(f"requirements.txt", encoding="utf-8") as fh:
     install_requires = fh.read().split('\n')
 
 setup(
-    name="tonemuso",
+    name="TonTVMReplay",
     version="0.0.0.0.3a0",
     author="Disintar LLP",
     author_email="andrey@head-labs.com",
