@@ -14,9 +14,38 @@
 12. `TX_CHUNK_SIZE` [OPTIONAL] - Num of TXs emulated by 1 iteration (40k is good, if <32gb ram - consider to use lower
 13. `C7_REWRITE` [OPTIONAL] - `{1: "base64 boc"}` json to override C7 params
 14. `COLOR_SCHEMA_PATH` [OPTIONAL] - Path to JSON schema of TLB "colors" - warning/error/ignore diff checks on fields.
+15. `TXS_TO_PROCESS_PATH` [OPTIONAL] - Path to JSON file with ordered TXs to check
+16. `LITESERVER_TIMEOUT` [OPTIONAL] - Timeout per one LC call
 
 ## Color schema
 
 - "skip" - skip check for field
 - "warn" - warn if field missmatch, but calc as success
 - "alarm" - calc as unsuccessful if field missmatch
+
+[Example of JSON](https://github.com/disintar/TonTVMReplay/blob/master/diff_colored.json)
+
+## Trace run
+
+For each TX need to provide (transaction) `hash`, `lt`, `workchain`, `shard`, `seqno`, `root_hash`, `file_hash`.
+
+If you have TX of initial trace tx you can get all fields:
+
+```
+{
+  transactions(
+    trace_hash: "9CE993000E4D40F81FBE867972E712ECD6D55849D8E0FC1F54A2ACF657BD9315"
+    page_size: 150
+  ) {
+    hash
+    lt
+    workchain
+    shard
+    seqno
+    root_hash
+    file_hash
+  }
+}
+```
+
+[Example of JSON](https://github.com/disintar/TonTVMReplay/blob/master/trace.json)

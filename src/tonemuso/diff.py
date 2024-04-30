@@ -50,14 +50,16 @@ def get_colored_diff(diff, color_schema, root='transaction'):
         for p in path:
             if p not in current_root:
                 logger.warning(f"[COLOR_SCHEMA] {p} is not in list, full path: {path}, but affected")
-                max_level = 'warn'
+                if max_level != 'alarm':
+                    max_level = 'warn'
                 log['keys']['__'.join(path)] = 'warn'
                 break
             else:
                 if isinstance(current_root[p], str):
                     level = current_root[p]
                     if level == 'warn':
-                        max_level = 'warn'
+                        if max_level != 'alarm':
+                            max_level = 'warn'
                         log['colors']['__'.join(path)] = 'warn'
                     elif level == 'alarm':
                         max_level = 'alarm'

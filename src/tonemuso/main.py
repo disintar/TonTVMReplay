@@ -1,4 +1,5 @@
 # Copyright (c) 2024 Disintar LLP Licensed under the Apache License Version 2.0
+from typing import Optional
 
 from tonpy.blockscanner.blockscanner import *
 from tonpy import begin_cell
@@ -16,6 +17,16 @@ if len(COLOR_SCHEMA):
 else:
     COLOR_SCHEMA = None
 
+TXS_TO_PROCESS = os.getenv("TXS_TO_PROCESS_PATH", None)
+TXS_WHITELIST = None
+if TXS_TO_PROCESS is not None:
+    with open(TXS_TO_PROCESS, 'r') as f:
+        TXS_TO_PROCESS = json.load(f)['transactions']
+
+    TXS_WHITELIST = set()
+    for tx in TXS_TO_PROCESS:
+        TXS_WHITELIST.add(tx['hash'])
+
 
 @curry
 def process_blocks(data, config_override: dict = None):
@@ -32,6 +43,17 @@ def process_blocks(data, config_override: dict = None):
     prev_block_data = [list(reversed(block['prev_block_data'][0])), block['prev_block_data'][1]]
     em.set_prev_blocks_info(prev_block_data)
     em.set_libs(VmDict(256, False, cell_root=Cell(block['libs'])))
+
+    if TXS_WHITELIST is not None:
+        process_this_chunk = False
+
+        for tx in txs:
+            if tx['tx'].get_hash() in TXS_WHITELIST:
+                process_this_chunk = True
+                break
+
+        if not process_this_chunk:
+            return []
 
     for tx in txs:
         current_tx_cs = tx['tx'].begin_parse()
@@ -62,6 +84,11 @@ def process_blocks(data, config_override: dict = None):
                 lt)
 
         go_as_success = True
+
+        if TXS_WHITELIST is not None and tx['tx'].get_hash() not in TXS_WHITELIST:
+            account_state = em.account.to_cell()
+            continue
+
         if not success or em.transaction is None:
             tx1_tlb = Transaction()
             tx1_tlb = tx1_tlb.cell_unpack(tx['tx'], True).dump()
@@ -149,7 +176,7 @@ def main():
     lcparams = {
         'mode': 'roundrobin',
         'my_rr_servers': [server],
-        'timeout': 100,
+        'timeout': os.getenv('LITESERVER_TIMEOUT', 5),
         'num_try': 3000,
         'threads': 1
     }
@@ -169,6 +196,23 @@ def main():
     if config_override is not None:
         config_override = json.loads(config_override)
 
+    blocks_to_load = None
+
+    if TXS_TO_PROCESS is not None:
+        blocks_to_load = []
+        known_hash = set()
+        from_seqno = None
+        to_seqno = None
+
+        for tx in TXS_TO_PROCESS:
+            if tx['root_hash'] not in known_hash:
+                blocks_to_load.append(BlockIdExt(BlockId(workchain=tx['workchain'],
+                                                         shard=tx['shard'],
+                                                         seqno=tx['seqno']),
+                                                 root_hash=tx['root_hash'],
+                                                 file_hash=tx['file_hash']))
+                known_hash.add(tx['root_hash'])
+
     scanner = BlockScanner(
         lcparams=lcparams,
         start_from=from_seqno,
@@ -180,7 +224,8 @@ def main():
         raw_process=process_blocks(config_override=config_override),
         out_queue=outq,
         only_mc_blocks=bool(os.getenv("ONLYMC_BLOCK", False)),
-        parse_txs_over_ls=bool(os.getenv("PARSE_OVER_LS", False))
+        parse_txs_over_ls=bool(os.getenv("PARSE_OVER_LS", False)),
+        blocks_to_load=blocks_to_load
     )
 
     scanner.start()
@@ -190,8 +235,9 @@ def main():
     unsuccess = []
 
     while not scanner.done:
-        tmp_s, tmp_u = process_result(outq)
+        tmp_s, tmp_u, tmp_w = process_result(outq)
         success += tmp_s
+        warnings += tmp_w
         unsuccess.extend(tmp_u)
         sleep(1)
 
