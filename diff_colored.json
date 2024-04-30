@@ -1,0 +1,69 @@
+{
+  "transaction": {
+    "account_addr": "alarm",
+    "lt": "alarm",
+    "prev_trans_hash": "alarm",
+    "prev_trans_lt": "alarm",
+    "now": "alarm",
+    "outmsg_cnt": "alarm",
+    "orig_status": "warn",
+    "end_status": "warn",
+    "r1": {
+      "in_msg": "alarm",
+      "out_msgs": "alarm"
+    },
+    "total_fees": {
+      "grams": "alarm",
+      "other": "alarm"
+    },
+    "state_update": "alarm",
+    "description": {
+      "is_tock": "alarm",
+      "storage_ph": {
+        "storage_fees_collected": "alarm",
+        "storage_fees_due": "alarm",
+        "status_change": "alarm"
+      },
+      "compute_ph": {
+        "success": "alarm",
+        "msg_state_used": "alarm",
+        "account_activated": "alarm",
+        "gas_fees": "alarm",
+        "r1": {
+          "gas_used": "warn",
+          "gas_limit": "warn",
+          "gas_credit": "warn",
+          "mode": "warn",
+          "exit_code": "alarm",
+          "exit_arg": "alarm",
+          "vm_steps": "alarm",
+          "vm_init_state_hash": "alarm",
+          "vm_final_state_hash": "alarm"
+        }
+      },
+      "action": {
+        "value": {
+          "success": "alarm",
+          "valid": "alarm",
+          "no_funds": "alarm",
+          "status_change": "alarm",
+          "total_fwd_fees": "alarm",
+          "total_action_fees": "alarm",
+          "result_code": "alarm",
+          "result_arg": "alarm",
+          "tot_actions": "alarm",
+          "spec_actions": "alarm",
+          "skipped_actions": "alarm",
+          "msgs_created": "alarm",
+          "action_list_hash": "warn",
+          "tot_msg_size": {
+            "cells": "alarm",
+            "bits": "alarm"
+          }
+        }
+      },
+      "aborted": "alarm",
+      "destroyed": "alarm"
+    }
+  }
+}

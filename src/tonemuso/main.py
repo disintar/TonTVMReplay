@@ -1,29 +1,20 @@
 # Copyright (c) 2024 Disintar LLP Licensed under the Apache License Version 2.0
 
 from tonpy.blockscanner.blockscanner import *
-from deepdiff import DeepDiff
 from tonpy import begin_cell
 from collections import Counter
 import json
 import os
+from tonemuso.diff import get_diff, get_colored_diff
 
 LOGLEVEL = int(os.getenv("EMUSO_LOGLEVEL", 1))
+COLOR_SCHEMA = str(os.getenv("COLOR_SCHEMA_PATH", ''))
 
-
-def get_diff(tx1, tx2):
-    tx1_tlb = Transaction()
-    tx1_tlb = tx1_tlb.cell_unpack(tx1, True).dump()
-
-    tx2_tlb = Transaction()
-    tx2_tlb = tx2_tlb.cell_unpack(tx2, True).dump()
-
-    diff = DeepDiff(tx1_tlb, tx2_tlb).to_dict()
-
-    address = tx1_tlb['account_addr']
-    del tx1_tlb
-    del tx2_tlb
-
-    return str(diff), address
+if len(COLOR_SCHEMA):
+    with open(COLOR_SCHEMA, "r") as f:
+        COLOR_SCHEMA = json.load(f)
+else:
+    COLOR_SCHEMA = None
 
 
 @curry
@@ -75,20 +66,40 @@ def process_blocks(data, config_override: dict = None):
             tx1_tlb = Transaction()
             tx1_tlb = tx1_tlb.cell_unpack(tx['tx'], True).dump()
             go_as_success = False
-            out.append({'success': False, 'expected': tx['tx'].get_hash(), 'address': tx1_tlb['account_addr'],
-                        'cant_emulate': True})
+            out.append({'mode': 'error', 'expected': tx['tx'].get_hash(), 'address': tx1_tlb['account_addr'],
+                        'cant_emulate': True,
+                        'fail_reason': "emulation_new_failed"})
 
         # Emulation transaction equal current transaction
-        if em.transaction.get_hash() != tx['tx'].get_hash():
+        if go_as_success and em.transaction.get_hash() != tx['tx'].get_hash():
             diff, address = get_diff(tx['tx'], em.transaction.to_cell())
-            go_as_success = False
-            out.append({'success': False, 'diff': diff, 'address': f"{block['block_id'].id.workchain}:{address}",
-                        'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash()})
+
+            if COLOR_SCHEMA is None:
+                diff = diff.to_dict()
+                go_as_success = False
+                out.append(
+                    {'mode': 'error', 'diff': str(diff), 'address': f"{block['block_id'].id.workchain}:{address}",
+                     'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
+                     'fail_reason': "hash_missmatch"})
+            else:
+                max_level, log = get_colored_diff(diff, COLOR_SCHEMA)
+                address = f"{block['block_id'].id.workchain}:{address}"
+                if max_level == 'alarm':
+                    go_as_success = False
+                    out.append(
+                        {'mode': 'error', 'diff': str(diff), 'address': address,
+                         'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(), "color_schema_log": log,
+                         'fail_reason': "color_schema_alarm"})
+                elif max_level == 'warn':
+                    go_as_success = False
+                    logger.warning(
+                        f"[COLOR_SCHEMA] Warning! tx: {tx['tx'].get_hash()}, address: {address}, color_schema_log: {log}")
+                    out.append({'mode': 'warning'})
 
         # Update account state, go to next transaction
         account_state = em.account.to_cell()
         if go_as_success:
-            out.append({'success': True})
+            out.append({'mode': 'success'})
 
     return out
 
@@ -99,17 +110,20 @@ def process_result(outq):
         total_txs.append(outq.get())
 
     tmp_s = 0
+    tmp_w = 0
     tmp_u = []
     if len(total_txs) > 0:
         for chunk in total_txs:
             for i in chunk:
-                if i['success']:
+                if i['mode'] == 'success':
                     tmp_s += 1
+                elif i['mode'] == 'warning':
+                    tmp_w += 1
                 else:
                     tmp_u.append(i)
 
         if LOGLEVEL > 1:
-            logger.warning(f"Emulator status: {tmp_s} success, {len(tmp_u)} unsuccess")
+            logger.warning(f"Emulator status: {tmp_s} success, {tmp_w} warnings, {len(tmp_u)} errors")
 
         if len(tmp_u) > 0 and LOGLEVEL > 1:
             cnt = Counter()
@@ -119,7 +133,7 @@ def process_result(outq):
             logger.error(f"Unique addreses errors: {len(cnt)}, most common: ")
             logger.error(cnt.most_common(5))
 
-    return tmp_s, tmp_u
+    return tmp_s, tmp_u, tmp_w
 
 
 def main():
@@ -135,7 +149,7 @@ def main():
     lcparams = {
         'mode': 'roundrobin',
         'my_rr_servers': [server],
-        'timeout': 1,
+        'timeout': 100,
         'num_try': 3000,
         'threads': 1
     }
@@ -172,6 +186,7 @@ def main():
     scanner.start()
 
     success = 0
+    warnings = 0
     unsuccess = []
 
     while not scanner.done:
@@ -181,11 +196,12 @@ def main():
         sleep(1)
 
     # After done some data can be in queue
-    tmp_s, tmp_u = process_result(outq)
+    tmp_s, tmp_u, tmp_w = process_result(outq)
     success += tmp_s
+    warnings += tmp_w
     unsuccess.extend(tmp_u)
 
-    logger.warning(f"Final emulator status: {success} success, {len(unsuccess)} unsuccess")
+    logger.warning(f"Final emulator status: {success} success, {len(unsuccess)} unsuccess, {warnings} warnings")
 
     if len(unsuccess) > 0:
         cnt = Counter()
@@ -195,8 +211,8 @@ def main():
         logger.error(f"Unique addreses errors: {len(cnt)}, most common: ")
         logger.error(cnt.most_common(5))
 
-    with open("failed_txs.json", "w") as f:
-        json.dump(unsuccess, f)
+        with open("failed_txs.json", "w") as f:
+            json.dump(unsuccess, f)
 
 
 if __name__ == '__main__':
