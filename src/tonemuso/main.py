@@ -178,7 +178,8 @@ def main():
         'my_rr_servers': [server],
         'timeout': os.getenv('LITESERVER_TIMEOUT', 5),
         'num_try': 3000,
-        'threads': 1
+        'threads': 1,
+        'loglevel': max(LOGLEVEL - 3, 0)
     }
 
     lc = LiteClient(**lcparams)
