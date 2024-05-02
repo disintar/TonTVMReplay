@@ -69,10 +69,14 @@ def process_blocks(data, config_override: dict = None):
 
     for tx in txs:
         try:
+
             current_tx_cs = tx['tx'].begin_parse()
             lt = tx['lt']
             now = tx['now']
             is_tock = tx['is_tock']
+
+            if LOGLEVEL > 4:
+                logger.debug(f"Start tx: {lt}, {now}, {is_tock}")
 
             tmp = current_tx_cs.load_ref(as_cs=True)
 
@@ -80,6 +84,10 @@ def process_blocks(data, config_override: dict = None):
                 in_msg = tmp.load_ref()
             else:
                 in_msg = None
+
+            if LOGLEVEL > 4:
+                logger.debug(
+                    f"Run: {account_state.get_hash()} with in_msg {in_msg.get_hash() if in_msg is not None else None}")
 
             if in_msg is None:
                 success = em.emulate_tick_tock_transaction(
@@ -96,13 +104,24 @@ def process_blocks(data, config_override: dict = None):
                     now,
                     lt)
 
+            if LOGLEVEL > 4:
+                logger.debug(
+                    f"Run success: {account_state.get_hash()} with in_msg {in_msg.get_hash() if in_msg is not None else None}, got: success: {success}, TX: {em.transaction}")
+
             go_as_success = True
 
             if TXS_WHITELIST is not None and tx['tx'].get_hash() not in TXS_WHITELIST:
                 account_state = em.account.to_cell()
+
+                if LOGLEVEL > 4:
+                    logger.debug(f"Skip, not in whitelist")
+
                 continue
 
             if not success or em.transaction is None:
+                if LOGLEVEL > 5:
+                    logger.debug(f"emulation_new_failed")
+
                 tx1_tlb = Transaction()
                 tx1_tlb = tx1_tlb.cell_unpack(tx['tx'], True).dump()
                 go_as_success = False
@@ -112,6 +131,9 @@ def process_blocks(data, config_override: dict = None):
 
             # Emulation transaction equal current transaction
             if go_as_success and em.transaction.get_hash() != tx['tx'].get_hash():
+                if LOGLEVEL > 5:
+                    logger.debug(f"hash_missmatch")
+
                 diff, address = get_diff(tx['tx'], em.transaction.to_cell())
 
                 if COLOR_SCHEMA is None:
@@ -122,8 +144,15 @@ def process_blocks(data, config_override: dict = None):
                          'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
                          'fail_reason': "hash_missmatch"})
                 else:
+                    if LOGLEVEL > 5:
+                        logger.debug(f"Get color schema")
+
                     max_level, log = get_colored_diff(diff, COLOR_SCHEMA)
                     address = f"{block['block_id'].id.workchain}:{address}"
+
+                    if LOGLEVEL > 5:
+                        logger.debug(f"New max level: {max_level}")
+
                     if max_level == 'alarm':
                         go_as_success = False
                         out.append(
@@ -135,6 +164,9 @@ def process_blocks(data, config_override: dict = None):
                         logger.warning(
                             f"[COLOR_SCHEMA] Warning! tx: {tx['tx'].get_hash()}, address: {address}, color_schema_log: {log}")
                         out.append({'mode': 'warning'})
+
+            if LOGLEVEL > 5:
+                logger.debug(f"Done, go to next TX")
 
             # Update account state, go to next transaction
             account_state = em.account.to_cell()
