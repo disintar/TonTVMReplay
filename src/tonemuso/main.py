@@ -32,17 +32,26 @@ if TXS_TO_PROCESS is not None:
 def process_blocks(data, config_override: dict = None):
     out = []
     block, account_state, txs = data
+    if LOGLEVEL > 3:
+        logger.debug(f"Start process block TXs: {len(txs)}")
+
     config: VmDict = VmDict(32, False, block['key_block']['config'])
 
     if config_override is not None:
         for param in config_override:
             config.set(int(param), begin_cell().store_ref(Cell(config_override[param])).end_cell().begin_parse())
 
+    if LOGLEVEL > 3:
+        logger.debug(f"Init emulator")
+
     em = EmulatorExtern(os.getenv("EMULATOR_PATH"), config)
     em.set_rand_seed(block['rand_seed'])
     prev_block_data = [list(reversed(block['prev_block_data'][0])), block['prev_block_data'][1]]
     em.set_prev_blocks_info(prev_block_data)
     em.set_libs(VmDict(256, False, cell_root=Cell(block['libs'])))
+
+    if LOGLEVEL > 3:
+        logger.debug(f"Emulator init success")
 
     if TXS_WHITELIST is not None:
         process_this_chunk = False
@@ -55,79 +64,85 @@ def process_blocks(data, config_override: dict = None):
         if not process_this_chunk:
             return []
 
+    if LOGLEVEL > 4:
+        txs = tqdm(txs, desc="Emulate accounts")
+
     for tx in txs:
-        current_tx_cs = tx['tx'].begin_parse()
-        lt = tx['lt']
-        now = tx['now']
-        is_tock = tx['is_tock']
+        try:
+            current_tx_cs = tx['tx'].begin_parse()
+            lt = tx['lt']
+            now = tx['now']
+            is_tock = tx['is_tock']
 
-        tmp = current_tx_cs.load_ref(as_cs=True)
+            tmp = current_tx_cs.load_ref(as_cs=True)
 
-        if tmp.load_bool():
-            in_msg = tmp.load_ref()
-        else:
-            in_msg = None
-
-        if in_msg is None:
-            success = em.emulate_tick_tock_transaction(
-                account_state,
-                is_tock,
-                now,
-                lt
-            )
-        else:
-            # Emulate
-            success = em.emulate_transaction(
-                account_state,
-                in_msg,
-                now,
-                lt)
-
-        go_as_success = True
-
-        if TXS_WHITELIST is not None and tx['tx'].get_hash() not in TXS_WHITELIST:
-            account_state = em.account.to_cell()
-            continue
-
-        if not success or em.transaction is None:
-            tx1_tlb = Transaction()
-            tx1_tlb = tx1_tlb.cell_unpack(tx['tx'], True).dump()
-            go_as_success = False
-            out.append({'mode': 'error', 'expected': tx['tx'].get_hash(), 'address': tx1_tlb['account_addr'],
-                        'cant_emulate': True,
-                        'fail_reason': "emulation_new_failed"})
-
-        # Emulation transaction equal current transaction
-        if go_as_success and em.transaction.get_hash() != tx['tx'].get_hash():
-            diff, address = get_diff(tx['tx'], em.transaction.to_cell())
-
-            if COLOR_SCHEMA is None:
-                diff = diff.to_dict()
-                go_as_success = False
-                out.append(
-                    {'mode': 'error', 'diff': str(diff), 'address': f"{block['block_id'].id.workchain}:{address}",
-                     'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
-                     'fail_reason': "hash_missmatch"})
+            if tmp.load_bool():
+                in_msg = tmp.load_ref()
             else:
-                max_level, log = get_colored_diff(diff, COLOR_SCHEMA)
-                address = f"{block['block_id'].id.workchain}:{address}"
-                if max_level == 'alarm':
+                in_msg = None
+
+            if in_msg is None:
+                success = em.emulate_tick_tock_transaction(
+                    account_state,
+                    is_tock,
+                    now,
+                    lt
+                )
+            else:
+                # Emulate
+                success = em.emulate_transaction(
+                    account_state,
+                    in_msg,
+                    now,
+                    lt)
+
+            go_as_success = True
+
+            if TXS_WHITELIST is not None and tx['tx'].get_hash() not in TXS_WHITELIST:
+                account_state = em.account.to_cell()
+                continue
+
+            if not success or em.transaction is None:
+                tx1_tlb = Transaction()
+                tx1_tlb = tx1_tlb.cell_unpack(tx['tx'], True).dump()
+                go_as_success = False
+                out.append({'mode': 'error', 'expected': tx['tx'].get_hash(), 'address': tx1_tlb['account_addr'],
+                            'cant_emulate': True,
+                            'fail_reason': "emulation_new_failed"})
+
+            # Emulation transaction equal current transaction
+            if go_as_success and em.transaction.get_hash() != tx['tx'].get_hash():
+                diff, address = get_diff(tx['tx'], em.transaction.to_cell())
+
+                if COLOR_SCHEMA is None:
+                    diff = diff.to_dict()
                     go_as_success = False
                     out.append(
-                        {'mode': 'error', 'diff': str(diff), 'address': address,
-                         'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(), "color_schema_log": log,
-                         'fail_reason': "color_schema_alarm"})
-                elif max_level == 'warn':
-                    go_as_success = False
-                    logger.warning(
-                        f"[COLOR_SCHEMA] Warning! tx: {tx['tx'].get_hash()}, address: {address}, color_schema_log: {log}")
-                    out.append({'mode': 'warning'})
+                        {'mode': 'error', 'diff': str(diff), 'address': f"{block['block_id'].id.workchain}:{address}",
+                         'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
+                         'fail_reason': "hash_missmatch"})
+                else:
+                    max_level, log = get_colored_diff(diff, COLOR_SCHEMA)
+                    address = f"{block['block_id'].id.workchain}:{address}"
+                    if max_level == 'alarm':
+                        go_as_success = False
+                        out.append(
+                            {'mode': 'error', 'diff': str(diff), 'address': address,
+                             'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(), "color_schema_log": log,
+                             'fail_reason': "color_schema_alarm"})
+                    elif max_level == 'warn':
+                        go_as_success = False
+                        logger.warning(
+                            f"[COLOR_SCHEMA] Warning! tx: {tx['tx'].get_hash()}, address: {address}, color_schema_log: {log}")
+                        out.append({'mode': 'warning'})
 
-        # Update account state, go to next transaction
-        account_state = em.account.to_cell()
-        if go_as_success:
-            out.append({'mode': 'success'})
-
+            # Update account state, go to next transaction
+            account_state = em.account.to_cell()
+            if go_as_success:
+                out.append({'mode': 'success'})
+        except Exception as e:
+            logger.error(f"EMULATOR ERROR: Got {e} while emulating!")
+            raise e
     return out
 
 
