@@ -11,6 +11,10 @@ class PathGetter:
         self.path.append(item)
         return self
 
+    def __getattr__(self, item):
+        self.path.append(item)
+        return self
+
     def get_path(self):
         return self.path
 
@@ -33,7 +37,11 @@ def get_diff(tx1, tx2):
 
 def unpack_path(path):
     root = PathGetter()
-    path = eval(path)
+    try:
+        path = eval(path)
+    except Exception as e:
+        logger.error(f"Incorrect path: {path}")
+        raise e
     return path.get_path()
 
 
