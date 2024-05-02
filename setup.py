@@ -11,7 +11,7 @@ with open(f"requirements.txt", encoding="utf-8") as fh:
 
 setup(
     name="TonTVMReplay",
-    version="0.0.0.0.4a0",
+    version="0.0.0.0.4b0",
     author="Disintar LLP",
     author_email="andrey@head-labs.com",
     description="Emulate TON blockchain",
