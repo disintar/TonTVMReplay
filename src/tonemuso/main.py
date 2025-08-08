@@ -6,7 +6,7 @@ from tonpy import begin_cell
 from collections import Counter
 import json
 import os
-from tonemuso.diff import get_diff, get_colored_diff
+from tonemuso.diff import get_diff, get_colored_diff, make_json_dumpable
 
 LOGLEVEL = int(os.getenv("EMUSO_LOGLEVEL", 1))
 COLOR_SCHEMA = str(os.getenv("COLOR_SCHEMA_PATH", ''))
@@ -137,10 +137,10 @@ def process_blocks(data, config_override: dict = None):
                 diff, address = get_diff(tx['tx'], em.transaction.to_cell())
 
                 if COLOR_SCHEMA is None:
-                    diff = diff.to_dict()
+                    diff_dict = diff.to_dict()
                     go_as_success = False
                     out.append(
-                        {'mode': 'error', 'diff': str(diff), 'address': f"{block['block_id'].id.workchain}:{address}",
+                        {'mode': 'error', 'diff': make_json_dumpable(diff_dict), 'address': f"{block['block_id'].id.workchain}:{address}",
                          'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
                          'fail_reason': "hash_missmatch"})
                 else:
@@ -155,8 +155,9 @@ def process_blocks(data, config_override: dict = None):
 
                     if max_level == 'alarm':
                         go_as_success = False
+                        diff_dict = diff.to_dict()
                         out.append(
-                            {'mode': 'error', 'diff': str(diff), 'address': address,
+                            {'mode': 'error', 'diff': make_json_dumpable(diff_dict), 'address': address,
                              'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(), "color_schema_log": log,
                              'fail_reason': "color_schema_alarm"})
                     elif max_level == 'warn':
@@ -223,7 +224,7 @@ def main():
     lcparams = {
         'mode': 'roundrobin',
         'my_rr_servers': [server],
-        'timeout': os.getenv('LITESERVER_TIMEOUT', 5),
+        'timeout': float(os.getenv('LITESERVER_TIMEOUT', 5)),
         'num_try': 3000,
         'threads': 1,
         'loglevel': max(LOGLEVEL - 3, 0)

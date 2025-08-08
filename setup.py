@@ -15,7 +15,7 @@ setup(
     author="Disintar LLP",
     author_email="andrey@head-labs.com",
     description="Emulate TON blockchain",
-    long_description=long_description,
+         long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/disintar/ton-emuso",
     project_urls={

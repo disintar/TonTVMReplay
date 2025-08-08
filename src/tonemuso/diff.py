@@ -1,6 +1,28 @@
 from deepdiff import DeepDiff
 from tonpy.autogen.block import Transaction
 from loguru import logger
+import json
+
+def make_json_dumpable(obj):
+    """
+    Convert a diff object to a JSON-dumpable dictionary.
+    Cell and CellSlice objects are converted using their .to_boc() method.
+    Other non-JSON-serializable objects are converted to strings.
+    """
+    if isinstance(obj, dict):
+        return {k: make_json_dumpable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [make_json_dumpable(item) for item in obj]
+    elif hasattr(obj, 'to_boc'):
+        return obj.to_boc()
+    elif isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
+    else:
+        try:
+            json.dumps(obj)
+            return obj
+        except (TypeError, OverflowError):
+            return str(obj)
 
 
 class PathGetter:
