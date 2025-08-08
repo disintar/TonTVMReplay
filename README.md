@@ -16,6 +16,7 @@
 14. `COLOR_SCHEMA_PATH` [OPTIONAL] - Path to JSON schema of TLB "colors" - warning/error/ignore diff checks on fields.
 15. `TXS_TO_PROCESS_PATH` [OPTIONAL] - Path to JSON file with ordered TXs to check
 16. `LITESERVER_TIMEOUT` [OPTIONAL] - Timeout per one LC call
+17. `EMULATOR_UNCHANGED_PATH` [OPTIONAL] - Path to SO of emulator for ShardAccount diff compare
 
 ## Color schema
 

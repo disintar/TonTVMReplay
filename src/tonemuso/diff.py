@@ -1,7 +1,9 @@
+
 from deepdiff import DeepDiff
-from tonpy.autogen.block import Transaction
+from tonpy.autogen.block import Transaction, ShardAccount
 from loguru import logger
 import json
+
 
 def make_json_dumpable(obj):
     """
@@ -102,3 +104,18 @@ def get_colored_diff(diff, color_schema, root='transaction'):
                     current_root = current_root[p]
 
     return max_level, log
+
+
+def get_shard_account_diff(sa1_cell, sa2_cell):
+    """
+    Compare two ShardAccount cells using DeepDiff on their dumped structures.
+    Returns a DeepDiff object. Address is not returned as ShardAccount dump may not include it in a uniform field.
+    """
+    sa1 = ShardAccount()
+    sa1_dump = sa1.cell_unpack(sa1_cell, True).dump()
+
+    sa2 = ShardAccount()
+    sa2_dump = sa2.cell_unpack(sa2_cell, True).dump()
+
+    diff = DeepDiff(sa1_dump, sa2_dump)
+    return diff

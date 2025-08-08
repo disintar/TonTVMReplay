@@ -6,7 +6,7 @@ from tonpy import begin_cell
 from collections import Counter
 import json
 import os
-from tonemuso.diff import get_diff, get_colored_diff, make_json_dumpable
+from tonemuso.diff import get_diff, get_colored_diff, make_json_dumpable, get_shard_account_diff
 
 LOGLEVEL = int(os.getenv("EMUSO_LOGLEVEL", 1))
 COLOR_SCHEMA = str(os.getenv("COLOR_SCHEMA_PATH", ''))
@@ -35,8 +35,11 @@ def process_blocks(data, config_override: dict = None):
     if LOGLEVEL > 3:
         logger.debug(f"Start process block TXs: {len(txs)}")
 
-    config: VmDict = VmDict(32, False, block['key_block']['config'])
+    # Base config from block key_block (no overrides)
+    base_config: VmDict = VmDict(32, False, block['key_block']['config'])
 
+    # Working config (may be overridden via C7_REWRITE)
+    config: VmDict = VmDict(32, False, block['key_block']['config'])
     if config_override is not None:
         for param in config_override:
             config.set(int(param), begin_cell().store_ref(Cell(config_override[param])).end_cell().begin_parse())
@@ -136,13 +139,52 @@ def process_blocks(data, config_override: dict = None):
 
                 diff, address = get_diff(tx['tx'], em.transaction.to_cell())
 
+                # If requested, and state_update.new_hash differs, emulate with UNCHANGED emulator (no C7 rewrite)
+                account_diff_dict = None
+                unchanged_emulator_tx_hash = None
+                try:
+                    unchanged_path = os.getenv("EMULATOR_UNCHANGED_PATH", "")
+                    if unchanged_path:
+                        affected_paths = set(diff.affected_paths)
+                        # DeepDiff paths look like: root['state_update']['new_hash']
+                        needs_unchanged = any("['state_update']['new_hash']" in p for p in affected_paths)
+                        if needs_unchanged:
+                            em2 = EmulatorExtern(unchanged_path, base_config)
+                            em2.set_rand_seed(block['rand_seed'])
+                            em2.set_prev_blocks_info(prev_block_data)
+                            em2.set_libs(VmDict(256, False, cell_root=Cell(block['libs'])))
+                            # Emulate the same tx without C7 rewrite
+                            if in_msg is None:
+                                em2.emulate_tick_tock_transaction(
+                                    account_state,
+                                    is_tock,
+                                    now,
+                                    lt
+                                )
+                            else:
+                                em2.emulate_transaction(
+                                    account_state,
+                                    in_msg,
+                                    now,
+                                    lt
+                                )
+                            unchanged_emulator_tx_hash = em2.transaction.get_hash() if em2.transaction is not None else None
+                            sa_diff = get_shard_account_diff(em.account.to_cell(), em2.account.to_cell())
+                            account_diff_dict = make_json_dumpable(sa_diff.to_dict())
+                except Exception as ee:
+                    logger.error(f"UNHANGED EMULATOR ERROR: {ee}")
+
                 if COLOR_SCHEMA is None:
                     diff_dict = diff.to_dict()
                     go_as_success = False
-                    out.append(
-                        {'mode': 'error', 'diff': make_json_dumpable(diff_dict), 'address': f"{block['block_id'].id.workchain}:{address}",
+                    err_obj = {'mode': 'error', 'diff': make_json_dumpable(diff_dict), 'address': f"{block['block_id'].id.workchain}:{address}",
                          'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
-                         'fail_reason': "hash_missmatch"})
+                         'fail_reason': "hash_missmatch"}
+                    if account_diff_dict is not None:
+                        err_obj['account_diff'] = account_diff_dict
+                    if unchanged_emulator_tx_hash is not None:
+                        err_obj['unchanged_emulator_tx_hash'] = unchanged_emulator_tx_hash
+                    out.append(err_obj)
                 else:
                     if LOGLEVEL > 5:
                         logger.debug(f"Get color schema")
@@ -156,15 +198,24 @@ def process_blocks(data, config_override: dict = None):
                     if max_level == 'alarm':
                         go_as_success = False
                         diff_dict = diff.to_dict()
-                        out.append(
-                            {'mode': 'error', 'diff': make_json_dumpable(diff_dict), 'address': address,
+                        err_obj = {'mode': 'error', 'diff': make_json_dumpable(diff_dict), 'address': address,
                              'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(), "color_schema_log": log,
-                             'fail_reason': "color_schema_alarm"})
+                             'fail_reason': "color_schema_alarm"}
+                        if account_diff_dict is not None:
+                            err_obj['account_diff'] = account_diff_dict
+                        if unchanged_emulator_tx_hash is not None:
+                            err_obj['unchanged_emulator_tx_hash'] = unchanged_emulator_tx_hash
+                        out.append(err_obj)
                     elif max_level == 'warn':
                         go_as_success = False
                         logger.warning(
                             f"[COLOR_SCHEMA] Warning! tx: {tx['tx'].get_hash()}, address: {address}, color_schema_log: {log}")
-                        out.append({'mode': 'warning'})
+                        warn_obj = {'mode': 'warning'}
+                        if account_diff_dict is not None:
+                            warn_obj['account_diff'] = account_diff_dict
+                        if unchanged_emulator_tx_hash is not None:
+                            warn_obj['unchanged_emulator_tx_hash'] = unchanged_emulator_tx_hash
+                        out.append(warn_obj)
 
             if LOGLEVEL > 5:
                 logger.debug(f"Done, go to next TX")
