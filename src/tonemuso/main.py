@@ -6,7 +6,11 @@ from tonpy import begin_cell
 from collections import Counter
 import json
 import os
+import argparse
+import base64
+import requests
 from tonemuso.diff import get_diff, get_colored_diff, make_json_dumpable, get_shard_account_diff
+from queue import Empty as QueueEmpty
 
 LOGLEVEL = int(os.getenv("EMUSO_LOGLEVEL", 1))
 COLOR_SCHEMA = str(os.getenv("COLOR_SCHEMA_PATH", ''))
@@ -28,10 +32,29 @@ if TXS_TO_PROCESS is not None:
         TXS_WHITELIST.add(tx['hash'])
 
 
+def b64_to_hex(s: str) -> str:
+    try:
+        return base64.b64decode(s).hex()
+    except Exception:
+        return s
+
+
+def hex_to_b64(s: str) -> str:
+    try:
+        return base64.b64encode(bytes.fromhex(s)).decode('ascii')
+    except Exception:
+        return s
+
+
 @curry
-def process_blocks(data, config_override: dict = None):
+def process_blocks(data, config_override: dict = None, trace_whitelist: set = None):
+    global TXS_WHITELIST
+
+    if isinstance(TXS_WHITELIST, set) and trace_whitelist is not None:
+        raise ValueError("TXS_WHITELIST and txs_whitelist are mutually exclusive")
+
     out = []
-    block, account_state, txs = data
+    block, initial_account_state, txs = data
     if LOGLEVEL > 3:
         logger.debug(f"Start process block TXs: {len(txs)}")
 
@@ -45,22 +68,33 @@ def process_blocks(data, config_override: dict = None):
             config.set(int(param), begin_cell().store_ref(Cell(config_override[param])).end_cell().begin_parse())
 
     if LOGLEVEL > 3:
-        logger.debug(f"Init emulator")
+        logger.debug(f"Init emulator(s)")
 
+    # Primary emulator (possibly with C7 rewrite)
     em = EmulatorExtern(os.getenv("EMULATOR_PATH"), config)
     em.set_rand_seed(block['rand_seed'])
     prev_block_data = [list(reversed(block['prev_block_data'][0])), block['prev_block_data'][1]]
     em.set_prev_blocks_info(prev_block_data)
     em.set_libs(VmDict(256, False, cell_root=Cell(block['libs'])))
 
+    # Secondary emulator (unchanged), optional
+    em2 = None
+    unchanged_path = os.getenv("EMULATOR_UNCHANGED_PATH", "")
+    if unchanged_path:
+        em2 = EmulatorExtern(unchanged_path, base_config)
+        em2.set_rand_seed(block['rand_seed'])
+        em2.set_prev_blocks_info(prev_block_data)
+        em2.set_libs(VmDict(256, False, cell_root=Cell(block['libs'])))
+
     if LOGLEVEL > 3:
         logger.debug(f"Emulator init success")
 
-    if TXS_WHITELIST is not None:
+    if TXS_WHITELIST is not None or trace_whitelist is not None:
+        _filter = trace_whitelist or TXS_WHITELIST
         process_this_chunk = False
 
         for tx in txs:
-            if tx['tx'].get_hash() in TXS_WHITELIST:
+            if tx['tx'].get_hash() in _filter:
                 process_this_chunk = True
                 break
 
@@ -70,9 +104,12 @@ def process_blocks(data, config_override: dict = None):
     if LOGLEVEL > 4:
         txs = tqdm(txs, desc="Emulate accounts")
 
+    # Maintain separated account states for both emulators
+    account_state_em1 = initial_account_state
+    account_state_em2 = initial_account_state
+
     for tx in txs:
         try:
-
             current_tx_cs = tx['tx'].begin_parse()
             lt = tx['lt']
             now = tx['now']
@@ -90,47 +127,76 @@ def process_blocks(data, config_override: dict = None):
 
             if LOGLEVEL > 4:
                 logger.debug(
-                    f"Run: {account_state.get_hash()} with in_msg {in_msg.get_hash() if in_msg is not None else None}")
+                    f"Run(em1): {account_state_em1.get_hash()} with in_msg {in_msg.get_hash() if in_msg is not None else None}")
 
+            # Emulate with primary emulator
             if in_msg is None:
-                success = em.emulate_tick_tock_transaction(
-                    account_state,
+                success1 = em.emulate_tick_tock_transaction(
+                    account_state_em1,
                     is_tock,
                     now,
                     lt
                 )
             else:
-                # Emulate
-                success = em.emulate_transaction(
-                    account_state,
+                success1 = em.emulate_transaction(
+                    account_state_em1,
                     in_msg,
                     now,
                     lt)
 
+            # Emulate with secondary emulator if available (using its own state)
+            success2 = None
+            if em2 is not None:
+                if LOGLEVEL > 4:
+                    logger.debug(
+                        f"Run(em2): {account_state_em2.get_hash()} with in_msg {in_msg.get_hash() if in_msg is not None else None}")
+                if in_msg is None:
+                    success2 = em2.emulate_tick_tock_transaction(
+                        account_state_em2,
+                        is_tock,
+                        now,
+                        lt
+                    )
+                else:
+                    success2 = em2.emulate_transaction(
+                        account_state_em2,
+                        in_msg,
+                        now,
+                        lt)
+
             if LOGLEVEL > 4:
                 logger.debug(
-                    f"Run success: {account_state.get_hash()} with in_msg {in_msg.get_hash() if in_msg is not None else None}, got: success: {success}, TX: {em.transaction}")
+                    f"Run success(em1): {account_state_em1.get_hash()} -> {success1}, TX: {em.transaction}; "
+                    f"(em2): {account_state_em2.get_hash() if em2 else 'NA'} -> {success2 if em2 else 'NA'}, TX: {em2.transaction if em2 else 'NA'}")
 
             go_as_success = True
 
+            # If TX whitelist provided skip checks but advance both emulator states
             if TXS_WHITELIST is not None and tx['tx'].get_hash() not in TXS_WHITELIST:
-                account_state = em.account.to_cell()
+                account_state_em1 = em.account.to_cell()
+                if em2 is not None:
+                    account_state_em2 = em2.account.to_cell()
 
                 if LOGLEVEL > 4:
-                    logger.debug(f"Skip, not in whitelist")
+                    logger.debug(f"Skip checks, not in whitelist")
 
                 continue
 
-            if not success or em.transaction is None:
+            # Primary emulator must succeed and produce a transaction
+            if not success1 or em.transaction is None:
                 if LOGLEVEL > 5:
                     logger.debug(f"emulation_new_failed")
 
                 tx1_tlb = Transaction()
                 tx1_tlb = tx1_tlb.cell_unpack(tx['tx'], True).dump()
                 go_as_success = False
-                out.append({'mode': 'error', 'expected': tx['tx'].get_hash(), 'address': tx1_tlb['account_addr'],
-                            'cant_emulate': True,
-                            'fail_reason': "emulation_new_failed"})
+                err = {'mode': 'error', 'expected': tx['tx'].get_hash(), 'address': tx1_tlb['account_addr'],
+                       'cant_emulate': True,
+                       'fail_reason': "emulation_new_failed"}
+                # Attach em2 status if available
+                if em2 is not None:
+                    err['unchanged_emulator_tx_hash'] = em2.transaction.get_hash() if (success2 and em2.transaction) else None
+                out.append(err)
 
             # Emulation transaction equal current transaction
             if go_as_success and em.transaction.get_hash() != tx['tx'].get_hash():
@@ -139,47 +205,25 @@ def process_blocks(data, config_override: dict = None):
 
                 diff, address = get_diff(tx['tx'], em.transaction.to_cell())
 
-                # If requested, and state_update.new_hash differs, emulate with UNCHANGED emulator (no C7 rewrite)
+                # Always include secondary emulator info if available
                 account_diff_dict = None
                 unchanged_emulator_tx_hash = None
                 try:
-                    unchanged_path = os.getenv("EMULATOR_UNCHANGED_PATH", "")
-                    if unchanged_path:
-                        affected_paths = set(diff.affected_paths)
-                        # DeepDiff paths look like: root['state_update']['new_hash']
-                        needs_unchanged = any("['state_update']['new_hash']" in p for p in affected_paths)
-                        if needs_unchanged:
-                            em2 = EmulatorExtern(unchanged_path, base_config)
-                            em2.set_rand_seed(block['rand_seed'])
-                            em2.set_prev_blocks_info(prev_block_data)
-                            em2.set_libs(VmDict(256, False, cell_root=Cell(block['libs'])))
-                            # Emulate the same tx without C7 rewrite
-                            if in_msg is None:
-                                em2.emulate_tick_tock_transaction(
-                                    account_state,
-                                    is_tock,
-                                    now,
-                                    lt
-                                )
-                            else:
-                                em2.emulate_transaction(
-                                    account_state,
-                                    in_msg,
-                                    now,
-                                    lt
-                                )
-                            unchanged_emulator_tx_hash = em2.transaction.get_hash() if em2.transaction is not None else None
-                            sa_diff = get_shard_account_diff(em.account.to_cell(), em2.account.to_cell())
-                            account_diff_dict = make_json_dumpable(sa_diff.to_dict())
+                    if em2 is not None:
+                        unchanged_emulator_tx_hash = em2.transaction.get_hash() if em2.transaction is not None else None
+                        sa_diff = get_shard_account_diff(em.account.to_cell(), em2.account.to_cell())
+                        account_diff_dict = {'data': make_json_dumpable(sa_diff.to_dict()),
+                                             'account_emulator_tx_hash_match': unchanged_emulator_tx_hash == tx['tx'].get_hash()}
                 except Exception as ee:
-                    logger.error(f"UNHANGED EMULATOR ERROR: {ee}")
+                    logger.error(f"UNCHANGED EMULATOR ERROR: {ee}")
 
                 if COLOR_SCHEMA is None:
                     diff_dict = diff.to_dict()
                     go_as_success = False
-                    err_obj = {'mode': 'error', 'diff': make_json_dumpable(diff_dict), 'address': f"{block['block_id'].id.workchain}:{address}",
-                         'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
-                         'fail_reason': "hash_missmatch"}
+                    err_obj = {'mode': 'error', 'diff': make_json_dumpable(diff_dict),
+                               'address': f"{block['block_id'].id.workchain}:{address}",
+                               'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
+                               'fail_reason': "hash_missmatch"}
                     if account_diff_dict is not None:
                         err_obj['account_diff'] = account_diff_dict
                     if unchanged_emulator_tx_hash is not None:
@@ -199,8 +243,9 @@ def process_blocks(data, config_override: dict = None):
                         go_as_success = False
                         diff_dict = diff.to_dict()
                         err_obj = {'mode': 'error', 'diff': make_json_dumpable(diff_dict), 'address': address,
-                             'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(), "color_schema_log": log,
-                             'fail_reason': "color_schema_alarm"}
+                                   'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
+                                   "color_schema_log": log,
+                                   'fail_reason': "color_schema_alarm"}
                         if account_diff_dict is not None:
                             err_obj['account_diff'] = account_diff_dict
                         if unchanged_emulator_tx_hash is not None:
@@ -220,8 +265,10 @@ def process_blocks(data, config_override: dict = None):
             if LOGLEVEL > 5:
                 logger.debug(f"Done, go to next TX")
 
-            # Update account state, go to next transaction
-            account_state = em.account.to_cell()
+            # Update account states for next transaction
+            account_state_em1 = em.account.to_cell()
+            if em2 is not None:
+                account_state_em2 = em2.account.to_cell()
             if go_as_success:
                 out.append({'mode': 'success'})
         except Exception as e:
@@ -232,8 +279,12 @@ def process_blocks(data, config_override: dict = None):
 
 def process_result(outq):
     total_txs = []
-    while not outq.empty():
-        total_txs.append(outq.get())
+    # Drain queue without relying on .empty(), which is unreliable for multiprocessing Queues
+    while True:
+        try:
+            total_txs.append(outq.get_nowait())
+        except QueueEmpty:
+            break
 
     tmp_s = 0
     tmp_w = 0
@@ -263,6 +314,10 @@ def process_result(outq):
 
 
 def main():
+    # Use environment variables for configuration (no CLI flags for tx hash / toncenter)
+    tx_hash_env = os.getenv("TX_HASH", None)
+    toncenter_api = os.getenv("TONCENTER_API", "https://toncenter.com/api/v3")
+
     server = {
         "ip": int(os.getenv("LITESERVER_SERVER")),
         "port": int(os.getenv("LITESERVER_PORT")),
@@ -297,8 +352,61 @@ def main():
         config_override = json.loads(config_override)
 
     blocks_to_load = None
+    TRACE_TXS = None
+    # If TX_HASH provided, fetch toncenter trace and build blocks_to_load and TXS whitelist
+    if tx_hash_env:
+        provided = tx_hash_env.strip()
+        # Prepare param for toncenter (it accepts hex as in examples). Keep as-is; if base64 provided, we can try converting to hex for internal whitelist.
+        toncenter_tx_param = provided
+        # Query toncenter traces
+        url = f"{toncenter_api.rstrip('/')}/traces"
+        try:
+            resp = requests.get(url, params={"tx_hash": toncenter_tx_param, "include_actions": "false", "limit": 10,
+                                             "offset": 0, "sort": "desc"}, timeout=20)
+            resp.raise_for_status()
+        except Exception as e:
+            logger.error(f"Failed to query toncenter traces: {e}")
+            raise
+        data = resp.json()
+        traces = data.get("traces", []) if isinstance(data, dict) else []
+        if not traces:
+            logger.error("No traces found for given tx_hash")
+            return
+        trace = traces[0]
+        tx_map = trace.get("transactions", {})
+        tx_order = trace.get("transactions_order", [])
+        # Collect whitelist of tx hashes (convert base64 -> hex)
 
-    if TXS_TO_PROCESS is not None:
+        TRACE_TXS = set()
+        # Use order list if present to preserve order, but set collects unique
+        for h in tx_order:
+            TRACE_TXS.add(b64_to_hex(h).upper())
+        # Collect only blocks that actually contain transactions from the trace (via block_ref)
+        blocks = set()  # tuples (workchain, shard_int, seqno)
+        for _, txo in tx_map.items():
+            bref = txo.get("block_ref") or {}
+            wc = bref.get("workchain")
+            shard_hex = bref.get("shard")
+            seqno = bref.get("seqno")
+            if wc is not None and shard_hex is not None and seqno is not None:
+                try:
+                    shard_int = int(shard_hex, 16) if isinstance(shard_hex, str) else int(shard_hex)
+                    blocks.add((int(wc), shard_int, int(seqno)))
+                except Exception:
+                    pass
+        # Build blocks_to_load using lc.lookup_block to get BlockIdExt for only those blocks
+        blocks_to_load = []
+        for wc, shard_int, seq in sorted(blocks):
+            try:
+                blk = lc.lookup_block(BlockId(wc, shard_int, seq)).blk_id
+                blocks_to_load.append(blk)
+            except Exception as e:
+                logger.error(f"Failed to lookup block ({wc},{hex(shard_int)},{seq}): {e}")
+        # Ensure we only load specific blocks
+        from_seqno = None
+        to_seqno = None
+
+    elif TXS_TO_PROCESS is not None:
         blocks_to_load = []
         known_hash = set()
         from_seqno = None
@@ -321,10 +429,10 @@ def main():
         loglevel=LOGLEVEL,
         chunk_size=int(os.getenv("CHUNK_SIZE", 2)),
         tx_chunk_size=int(os.getenv("TX_CHUNK_SIZE", 40000)),
-        raw_process=process_blocks(config_override=config_override),
+        raw_process=process_blocks(config_override=config_override, trace_whitelist=TRACE_TXS),
         out_queue=outq,
         only_mc_blocks=bool(os.getenv("ONLYMC_BLOCK", False)),
-        parse_txs_over_ls=bool(os.getenv("PARSE_OVER_LS", False)),
+        parse_txs_over_ls=True if tx_hash_env else bool(os.getenv("PARSE_OVER_LS", False)),
         blocks_to_load=blocks_to_load
     )
 

@@ -1,3 +1,4 @@
 tonpy-dev==0.0.0.4.2a1
 deepdiff
 cytoolz
+requests

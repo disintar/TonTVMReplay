@@ -11,12 +11,14 @@
 9. `CHUNK_SIZE` [OPTIONAL] - Number of MC block to load and emulate by 1 iteration (2 by default)
 10. `EMUSO_LOGLEVEL` [OPTIONAL] - 0 - disabled, 1 - per chunk, 2 - tqdm (1 by default)
 11. `ONLYMC_BLOCK` [OPTIONAL] - Emulate only MC blocks (false by default)
-12. `TX_CHUNK_SIZE` [OPTIONAL] - Num of TXs emulated by 1 iteration (40k is good, if <32gb ram - consider to use lower
+12. `TX_CHUNK_SIZE` [OPTIONAL] - Num of TXs emulated by 1 iteration (40k is good, if <32gb ram - consider to use lower)
 13. `C7_REWRITE` [OPTIONAL] - `{1: "base64 boc"}` json to override C7 params
 14. `COLOR_SCHEMA_PATH` [OPTIONAL] - Path to JSON schema of TLB "colors" - warning/error/ignore diff checks on fields.
 15. `TXS_TO_PROCESS_PATH` [OPTIONAL] - Path to JSON file with ordered TXs to check
 16. `LITESERVER_TIMEOUT` [OPTIONAL] - Timeout per one LC call
 17. `EMULATOR_UNCHANGED_PATH` [OPTIONAL] - Path to SO of emulator for ShardAccount diff compare
+18. `TX_HASH` [OPTIONAL] - Transaction hash (hex or base64) to trace via Toncenter and emulate the involved blocks
+19. `TONCENTER_API` [OPTIONAL] - Toncenter API base URL (default: https://toncenter.com/api/v3)
 
 ## Color schema
 
@@ -27,6 +29,19 @@
 [Example of JSON](https://github.com/disintar/TonTVMReplay/blob/master/diff_colored.json)
 
 ## Trace run
+
+Option A: Use toncenter traces by tx hash (new)
+
+- Usage:
+  - Set env `TX_HASH=<HEX_OR_BASE64_TX_HASH>`
+  - Optionally set `TONCENTER_API=https://toncenter.com/api/v3` (default is already this)
+  - Run: `tonemuso`
+- The tool will:
+  - Query Toncenter v3 traces for the given TX_HASH;
+  - Load only blocks that contain transactions from the trace via liteserver;
+  - Emulate transactions and produce diff like in blockscanner mode.
+
+Option B: Provide explicit TX list JSON
 
 For each TX need to provide (transaction) `hash`, `lt`, `workchain`, `shard`, `seqno`, `root_hash`, `file_hash`.
 

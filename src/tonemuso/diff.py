@@ -11,7 +11,9 @@ def make_json_dumpable(obj):
     Cell and CellSlice objects are converted using their .to_boc() method.
     Other non-JSON-serializable objects are converted to strings.
     """
-    if isinstance(obj, dict):
+    if isinstance(obj, type):
+        return str(obj)
+    elif isinstance(obj, dict):
         return {k: make_json_dumpable(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [make_json_dumpable(item) for item in obj]
