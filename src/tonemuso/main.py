@@ -381,6 +381,9 @@ def main():
                 unsuccess = c.get('unsuccess', 0)
                 new_cnt = c.get('new', 0)
                 missed_cnt = c.get('missed', 0)
+                # Add also transactions from original trace that are not presented in emulated tree
+                not_presented = trace_entries[0].get('not_presented') or []
+                missed_cnt += len(not_presented)
                 logger.warning(f"Final emulator status: {success} success, {unsuccess} unsuccess, {warnings} warnings, {new_cnt} new, {missed_cnt} missed")
                 # Skip the default final log below by returning early
                 return

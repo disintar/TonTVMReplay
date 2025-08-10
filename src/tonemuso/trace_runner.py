@@ -639,6 +639,42 @@ class TraceOrderedRunner:
         return node
 
 
+    def _collect_in_hashes(self, node: Optional[Dict[str, Any]]) -> Set[str]:
+        seen: Set[str] = set()
+        def dfs(n):
+            if not isinstance(n, dict):
+                return
+            ih = n.get('in_msg_hash')
+            if isinstance(ih, str):
+                seen.add(ih)
+            for ch in n.get('children', []) or []:
+                dfs(ch)
+        dfs(node)
+        return seen
+
+    def _collect_not_presented(self, orig: Optional[Dict[str, Any]], present: Set[str]) -> List[Dict[str, Any]]:
+        missing: List[Dict[str, Any]] = []
+        def walk(n):
+            if not isinstance(n, dict):
+                return
+            ih = n.get('in_msg_hash')
+            if isinstance(ih, str) and ih not in present:
+                # Include the node as-is but ensure schema fields are present
+                missing.append({
+                    'tx_hash': n.get('tx_hash'),
+                    'in_msg_hash': ih,
+                    'in_msg_body_hash': n.get('in_msg_body_hash'),
+                    'opcode': n.get('opcode'),
+                    'destination': n.get('destination'),
+                    'bounce': n.get('bounce'),
+                    'bounced': n.get('bounced'),
+                    'children': []
+                })
+            for ch in n.get('children', []) or []:
+                walk(ch)
+        walk(orig)
+        return missing
+
     def run(self, tx_order_hex_upper: List[str]) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         order_list = tx_order_hex_upper or self.tx_order_hex_upper
@@ -662,11 +698,15 @@ class TraceOrderedRunner:
             pass
         emu_root = self._process_tx(root_h, out, visited=set(), in_msg_b64=root_in, in_msg_body_b64=root_body, in_opcode=root_opcode, in_destination=root_destination, in_bounce=root_bounce, in_bounced=root_bounced)
         self.emulated_trace_root = emu_root
+        # Prepare not_presented list by a second recursive pass
+        present_hashes = self._collect_in_hashes(self.emulated_trace_root)
+        not_presented = self._collect_not_presented(self.original_trace_root, present_hashes)
         # Record original and emulated trace (no diff) into failed_traces.json
         self.failed_traces.append({
             'type': 'trace_tree_comparison',
             'root_tx': hex_to_b64(root_h),
             'original_trace': self.original_trace_root,
             'emulated_trace': self.emulated_trace_root,
+            'not_presented': not_presented,
         })
         return out
