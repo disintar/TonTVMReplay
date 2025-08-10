@@ -161,3 +161,4 @@ cython_debug/
 
 failed_txs.json
 test.json
+failed_traces.json
