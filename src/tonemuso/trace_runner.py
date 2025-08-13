@@ -125,8 +125,9 @@ class TraceOrderedRunner:
     def _transform_original_trace(self, node: Dict[str, Any]) -> Dict[str, Any]:
         """
         Transform toncenter trace node structure into required TX schema:
-        TX = {tx_hash, in_msg_hash, in_msg_body_hash, opcode, destination, bounce, bounced, children: List[TX]}
+        TX = {tx_hash, in_msg_hash, in_msg_body_hash, opcode, destination, bounce, bounced, lt, children: List[TX]}
         in_msg_body_hash/opcode/destination/bounce/bounced are taken from original_tx_details[tx_hash].in_msg
+        lt is taken directly from original_tx_details[tx_hash]['lt'] (as provided by toncenter)
         """
         tx_b64 = node.get('tx_hash')
         in_msg_b64 = node.get('in_msg_hash')
@@ -135,6 +136,7 @@ class TraceOrderedRunner:
         destination = None
         in_bounce = None
         in_bounced = None
+        tx_lt = None
         if isinstance(tx_b64, str):
             tx_info = (self.original_tx_details or {}).get(tx_b64) or {}
             in_msg = tx_info.get('in_msg') or {}
@@ -143,6 +145,7 @@ class TraceOrderedRunner:
             destination = in_msg.get('destination')
             in_bounce = in_msg.get('bounce')
             in_bounced = in_msg.get('bounced')
+            tx_lt = tx_info.get('lt')
             # Normalize to Address(...).raw format if available
             try:
                 if isinstance(destination, str):
@@ -161,6 +164,7 @@ class TraceOrderedRunner:
             'destination': destination,
             'bounce': in_bounce,
             'bounced': in_bounced,
+            'lt': tx_lt,
             'children': children_nodes
         }
 
@@ -189,6 +193,7 @@ class TraceOrderedRunner:
                 for ch in children:
                     if isinstance(ch, dict):
                         walk(ch)
+
             walk(toncenter_tx_map)
         except Exception as e:
             logger.error(f"Failed to build child map: {e}")
@@ -260,7 +265,8 @@ class TraceOrderedRunner:
         else:
             logger.warning(f"No state available for account {str(account_addr)} in block {block_key}")
 
-    def _emulate_internal_message_recursive(self, block_key: BlockKey, msg: Dict[str, Any], now: int, lt: int) -> Optional[Dict[str, Any]]:
+    def _emulate_internal_message_recursive(self, block_key: BlockKey, msg: Dict[str, Any], now: int, lt: int) -> \
+    Optional[Dict[str, Any]]:
         # Destination account as Address
         dest_addr: Address = msg['dest']
         self._ensure_account_state(block_key, dest_addr)
@@ -296,20 +302,21 @@ class TraceOrderedRunner:
                         node['children'].append(child_node)
                 return node
             else:
-                self._record_failed('extra_emulation_failed', dest=str(dest_addr), reason='emulate_transaction returned False',
-                                                emitted_message={
-                                                    'opcode': msg.get('opcode'),
-                                                    'destination': str(dest_addr),
-                                                    'body_hash': hex_to_b64(msg.get('bodyhash')) if msg.get('bodyhash') else None
-                                                })
+                self._record_failed('extra_emulation_failed', dest=str(dest_addr),
+                                    reason='emulate_transaction returned False',
+                                    emitted_message={
+                                        'opcode': msg.get('opcode'),
+                                        'destination': str(dest_addr),
+                                        'body_hash': hex_to_b64(msg.get('bodyhash')) if msg.get('bodyhash') else None
+                                    })
                 return None
         except Exception as e:
             self._record_failed('extra_emulation_exception', dest=str(dest_addr), error=str(e),
-                                         emitted_message={
-                                             'opcode': msg.get('opcode'),
-                                             'destination': str(dest_addr),
-                                             'body_hash': hex_to_b64(msg.get('bodyhash')) if msg.get('bodyhash') else None
-                                         })
+                                emitted_message={
+                                    'opcode': msg.get('opcode'),
+                                    'destination': str(dest_addr),
+                                    'body_hash': hex_to_b64(msg.get('bodyhash')) if msg.get('bodyhash') else None
+                                })
             return None
 
     def _process_emitted_children_with_override(self,
@@ -336,7 +343,8 @@ class TraceOrderedRunner:
                 gc_hex = links.get(cm_b64)
                 if gc_hex:
                     gc_dest = cm.get('dest').raw if cm.get('dest') is not None else None
-                    gc_node = self._process_tx(gc_hex, out, visited, cm_b64, cbody_b64, cop, gc_dest, cm.get('bounce'), cm.get('bounced'))
+                    gc_node = self._process_tx(gc_hex, out, visited, cm_b64, cbody_b64, cop, gc_dest, cm.get('bounce'),
+                                               cm.get('bounced'))
                     if gc_node is not None:
                         nodes.append(gc_node)
                 else:
@@ -388,11 +396,13 @@ class TraceOrderedRunner:
                             gc_account_int = int(gc_tlb.account_addr, 2)
                             gc_account_addr = Address(f"{gc_block_key[0]}:{hex(gc_account_int).upper()[2:].zfill(64)}")
                             emu, _ = self._get_emulators(gc_block_key)
-                            gc_state = self.global_overrides.get(gc_account_addr) or self.account_states1[gc_block_key][gc_account_addr]
+                            gc_state = self.global_overrides.get(gc_account_addr) or self.account_states1[gc_block_key][
+                                gc_account_addr]
                             self.account_states1[gc_block_key][gc_account_addr] = gc_state
                             # Emulate with override message
                             tmp_out3, new_state_gc, _ns, gc_out_msgs = emulate_tx_step_with_in_msg(
-                                self.blocks[gc_block_key], gc_tx, emu, gc_state, cm['cell'], self.loglevel, self.color_schema, True
+                                self.blocks[gc_block_key], gc_tx, emu, gc_state, cm['cell'], self.loglevel,
+                                self.color_schema, True
                             )
                             out.extend(tmp_out3)
                             # Update state and global overrides
@@ -420,7 +430,8 @@ class TraceOrderedRunner:
                             continue
                 # Else treat as extra (new) message
                 if cm is not None and 'cell' in cm:
-                    extra_node = self._emulate_internal_message_recursive(parent_block_key, cm, parent_tx['now'], parent_tx['lt'])
+                    extra_node = self._emulate_internal_message_recursive(parent_block_key, cm, parent_tx['now'],
+                                                                          parent_tx['lt'])
                     if extra_node is not None:
                         nodes.append(extra_node)
                 else:
@@ -454,7 +465,15 @@ class TraceOrderedRunner:
         return nodes
 
     # ---------- Traversal ----------
-    def _process_tx(self, h: TxHashHex, out: List[Dict[str, Any]], visited: Set[TxHashHex], in_msg_b64: Optional[str] = None, in_msg_body_b64: Optional[str] = None, in_opcode: Optional[str] = None, in_destination: Optional[str] = None, in_bounce: Optional[bool] = None, in_bounced: Optional[bool] = None) -> Optional[Dict[str, Any]]:
+    def _process_tx(self, h: TxHashHex,
+                    out: List[Dict[str, Any]],
+                    visited: Set[TxHashHex],
+                    in_msg_b64: Optional[str] = None,
+                    in_msg_body_b64: Optional[str] = None,
+                    in_opcode: Optional[str] = None,
+                    in_destination: Optional[str] = None,
+                    in_bounce: Optional[bool] = None,
+                    in_bounced: Optional[bool] = None) -> Optional[Dict[str, Any]]:
         if h in visited:
             return None
         visited.add(h)
@@ -473,8 +492,17 @@ class TraceOrderedRunner:
         self.account_states1[block_key][account_addr] = state1
 
         tmp_out, new_state1, _new_state2, out_msgs = emulate_tx_step(
-            self.blocks[block_key], tx, em, None, state1, None, self.loglevel, self.color_schema, True
+            self.blocks[block_key],
+            tx,
+            em,
+            None,
+            state1,
+            None,
+            self.loglevel,
+            self.color_schema,
+            True
         )
+
         out.extend(tmp_out)
         self.account_states1[block_key][account_addr] = new_state1
 
@@ -506,7 +534,8 @@ class TraceOrderedRunner:
                 child_hex = link_map.get(mh_b64)
                 if child_hex:
                     child_dest = m.get('dest').raw if m.get('dest') is not None else None
-                    child_node = self._process_tx(child_hex, out, visited, mh_b64, body_b64, opcode, child_dest, m.get('bounce'), m.get('bounced'))
+                    child_node = self._process_tx(child_hex, out, visited, mh_b64, body_b64, opcode, child_dest,
+                                                  m.get('bounce'), m.get('bounced'))
                     if child_node is not None:
                         node['children'].append(child_node)
                 else:
@@ -560,13 +589,16 @@ class TraceOrderedRunner:
                             # Prepare child account state
                             child_tlb = Transaction().cell_unpack(child_tx['tx'], True)
                             child_account_int = int(child_tlb.account_addr, 2)
-                            child_account_addr = Address(f"{child_block_key[0]}:{hex(child_account_int).upper()[2:].zfill(64)}")
+                            child_account_addr = Address(
+                                f"{child_block_key[0]}:{hex(child_account_int).upper()[2:].zfill(64)}")
                             em_child, _ = self._get_emulators(child_block_key)
-                            child_state = self.global_overrides.get(child_account_addr) or self.account_states1[child_block_key][child_account_addr]
+                            child_state = self.global_overrides.get(child_account_addr) or \
+                                          self.account_states1[child_block_key][child_account_addr]
                             self.account_states1[child_block_key][child_account_addr] = child_state
                             # Run override emulation with child's timing
                             tmp_out2, new_state_child, _ns2, child_out_msgs = emulate_tx_step_with_in_msg(
-                                self.blocks[child_block_key], child_tx, em_child, child_state, m['cell'], self.loglevel, self.color_schema, True
+                                self.blocks[child_block_key], child_tx, em_child, child_state, m['cell'], self.loglevel,
+                                self.color_schema, True
                             )
                             out.extend(tmp_out2)
                             # Update states and global override
@@ -638,9 +670,9 @@ class TraceOrderedRunner:
             i += 1
         return node
 
-
     def _collect_in_hashes(self, node: Optional[Dict[str, Any]]) -> Set[str]:
         seen: Set[str] = set()
+
         def dfs(n):
             if not isinstance(n, dict):
                 return
@@ -649,11 +681,13 @@ class TraceOrderedRunner:
                 seen.add(ih)
             for ch in n.get('children', []) or []:
                 dfs(ch)
+
         dfs(node)
         return seen
 
     def _collect_not_presented(self, orig: Optional[Dict[str, Any]], present: Set[str]) -> List[Dict[str, Any]]:
         missing: List[Dict[str, Any]] = []
+
         def walk(n):
             if not isinstance(n, dict):
                 return
@@ -672,6 +706,7 @@ class TraceOrderedRunner:
                 })
             for ch in n.get('children', []) or []:
                 walk(ch)
+
         walk(orig)
         return missing
 
@@ -696,7 +731,18 @@ class TraceOrderedRunner:
                 root_destination = Address(root_destination).raw
         except Exception:
             pass
-        emu_root = self._process_tx(root_h, out, visited=set(), in_msg_b64=root_in, in_msg_body_b64=root_body, in_opcode=root_opcode, in_destination=root_destination, in_bounce=root_bounce, in_bounced=root_bounced)
+
+        emu_root = self._process_tx(
+            root_h,
+            out,
+            visited=set(),
+            in_msg_b64=root_in,
+            in_msg_body_b64=root_body,
+            in_opcode=root_opcode,
+            in_destination=root_destination,
+            in_bounce=root_bounce,
+            in_bounced=root_bounced)
+
         self.emulated_trace_root = emu_root
         # Prepare not_presented list by a second recursive pass
         present_hashes = self._collect_in_hashes(self.emulated_trace_root)

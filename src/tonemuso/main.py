@@ -165,8 +165,10 @@ def process_result(outq):
 
 
 def main():
-    # Use environment variables for configuration (no CLI flags for tx hash / toncenter)
-    tx_hash_env = os.getenv("TX_HASH", None)
+    # Use environment variables for configuration (no CLI flags for tx/msg hash / toncenter)
+    toncenter_tx_hash = os.getenv("TONCENTER_TX_HASH", None)
+    toncenter_msg_hash = os.getenv("TONCENTER_MSG_HASH", None)
+    toncenter_api_key = os.getenv("TONCENTER_API_KEY", None)
     toncenter_api = os.getenv("TONCENTER_API", "https://toncenter.com/api/v3")
 
     server = {
@@ -205,16 +207,24 @@ def main():
     blocks_to_load = None
     TRACE_TXS = None
     TX_ORDER_LIST = None
-    # If TX_HASH provided, fetch toncenter trace and build blocks_to_load and TXS whitelist
-    if tx_hash_env:
-        provided = tx_hash_env.strip()
-        # Prepare param for toncenter (it accepts hex as in examples). Keep as-is; if base64 provided, we can try converting to hex for internal whitelist.
-        toncenter_tx_param = provided
+    # Determine if we are in trace mode (by tx hash or msg hash)
+    trace_query_provided = bool((toncenter_tx_hash and toncenter_tx_hash.strip()) or (toncenter_msg_hash and toncenter_msg_hash.strip()))
+    if trace_query_provided:
+        # Prepare param for toncenter (it accepts hex as in examples). Keep as-is.
+        param_key = "tx_hash" if (toncenter_tx_hash and toncenter_tx_hash.strip()) else "msg_hash"
+        param_value = (toncenter_tx_hash or toncenter_msg_hash).strip()
         # Query toncenter traces
         url = f"{toncenter_api.rstrip('/')}/traces"
+        params = {param_key: param_value, "include_actions": "false", "limit": 10, "offset": 0, "sort": "desc"}
+        headers = None
+        if toncenter_api_key:
+            headers = {
+                'X-API-Key': toncenter_api_key,
+                'Content-Type': 'application/json',
+                'accept': 'application/json'
+            }
         try:
-            resp = requests.get(url, params={"tx_hash": toncenter_tx_param, "include_actions": "false", "limit": 10,
-                                             "offset": 0, "sort": "desc"}, timeout=20)
+            resp = requests.get(url, params=params, headers=headers, timeout=20)
             resp.raise_for_status()
         except Exception as e:
             logger.error(f"Failed to query toncenter traces: {e}")
@@ -222,7 +232,7 @@ def main():
         data = resp.json()
         traces = data.get("traces", []) if isinstance(data, dict) else []
         if not traces:
-            logger.error("No traces found for given tx_hash")
+            logger.error(f"No traces found for given {param_key}")
             return
         trace = traces[0]
         tx_map = trace.get("transactions", {})
@@ -274,7 +284,7 @@ def main():
                 known_hash.add(tx['root_hash'])
 
     raw_proc = process_blocks(config_override=config_override,
-                              trace_whitelist=TRACE_TXS) if not tx_hash_env else collect_raw
+                              trace_whitelist=TRACE_TXS) if not trace_query_provided else collect_raw
 
     scanner = BlockScanner(
         lcparams=lcparams,
@@ -287,7 +297,7 @@ def main():
         raw_process=raw_proc,
         out_queue=outq,
         only_mc_blocks=bool(os.getenv("ONLYMC_BLOCK", False)),
-        parse_txs_over_ls=True if tx_hash_env else bool(os.getenv("PARSE_OVER_LS", False)),
+        parse_txs_over_ls=True if trace_query_provided else bool(os.getenv("PARSE_OVER_LS", False)),
         blocks_to_load=blocks_to_load
     )
 
@@ -297,7 +307,7 @@ def main():
     warnings = 0
     unsuccess = []
 
-    if not tx_hash_env:
+    if not trace_query_provided:
         while not scanner.done:
             tmp_s, tmp_u, tmp_w = process_result(outq)
             success += tmp_s
