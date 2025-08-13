@@ -241,8 +241,8 @@ def main():
 
         TRACE_TXS = set()
         TX_ORDER_LIST = [b64_to_hex(h).upper() for h in tx_order]
-        for h in TX_ORDER_LIST:
-            TRACE_TXS.add(h)
+        for transaction_hash in TX_ORDER_LIST:
+            TRACE_TXS.add(transaction_hash)
         # Collect only blocks that actually contain transactions from the trace (via block_ref)
         blocks = set()  # tuples (workchain, shard_int, seqno)
         for _, txo in tx_map.items():

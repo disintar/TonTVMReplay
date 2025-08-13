@@ -44,6 +44,8 @@ class TraceOrderedRunner:
         self.blocks: Dict[BlockKey, Dict[str, Any]] = {}
         self.block_emulators: Dict[BlockKey, Tuple[EmulatorExtern, Optional[EmulatorExtern]]] = {}
         self.account_states1: Dict[BlockKey, Dict[Address, Cell]] = defaultdict(dict)
+        # Per-transaction BEFORE states captured in main.collect_raw emulation
+        self.before_states: Dict[TxHashHex, Cell] = {}
 
         # Config
         self.config_override = config_override
@@ -97,11 +99,11 @@ class TraceOrderedRunner:
         return {'mode': 'success'}
 
     def _build_message_meta(self) -> None:
-        # Build mapping: parent_tx_hex -> { in_msg_b64 -> { opcode, destination, body_hash } }
+        # Build mapping: parent transaction_hash (hex) -> { in_msg_b64 -> { opcode, destination, body_hash } }
         self.message_meta: Dict[TxHashHex, Dict[MsgHashB64, Dict[str, Any]]] = {}
         try:
             for b64_tx, info in (self.original_tx_details or {}).items():
-                parent_hex = b64_to_hex(b64_tx)
+                parent_transaction_hash = b64_to_hex(b64_tx)
                 out = info.get('out_msgs') or []
                 if not out:
                     continue
@@ -118,7 +120,7 @@ class TraceOrderedRunner:
                         'bounced': m.get('bounced')
                     }
                 if meta_map:
-                    self.message_meta[parent_hex] = meta_map
+                    self.message_meta[parent_transaction_hash] = meta_map
         except Exception as e:
             logger.warning(f"Failed to build message meta: {e}")
 
@@ -174,7 +176,7 @@ class TraceOrderedRunner:
         try:
             # If we were given a single trace tree node (has tx_hash and children), walk it recursively
             def walk(node: Dict[str, Any]):
-                parent_hex = b64_to_hex(node.get('tx_hash')) if node.get('tx_hash') else None
+                parent_transaction_hash = b64_to_hex(node.get('tx_hash')) if node.get('tx_hash') else None
                 children = node.get('children') or []
                 child_b64s: List[MsgHashB64] = []
                 link_map: Dict[MsgHashB64, TxHashHex] = {}
@@ -187,9 +189,9 @@ class TraceOrderedRunner:
                         child_b64s.append(in_b)
                         if isinstance(tx_b64, str):
                             link_map[in_b] = b64_to_hex(tx_b64)
-                if parent_hex:
-                    self.child_map[parent_hex] = child_b64s
-                    self.child_link_map[parent_hex] = link_map
+                if parent_transaction_hash:
+                    self.child_map[parent_transaction_hash] = child_b64s
+                    self.child_link_map[parent_transaction_hash] = link_map
                 for ch in children:
                     if isinstance(ch, dict):
                         walk(ch)
@@ -207,10 +209,14 @@ class TraceOrderedRunner:
                 tx_tlb = Transaction().cell_unpack(tx['tx'], True)
                 account_address = int(tx_tlb.account_addr, 2)
                 account_addr = Address(f"{block_key[0]}:{hex(account_address).upper()[2:].zfill(64)}")
+                # Seed default account state from initial if not set
                 if account_addr not in self.account_states1[block_key]:
                     self.account_states1[block_key][account_addr] = initial_account_state
-                h = tx['tx'].get_hash().upper()
-                self.tx_index[h] = (block_key, tx)
+                transaction_hash = tx['tx'].get_hash().upper()
+                self.tx_index[transaction_hash] = (block_key, tx)
+                # Capture BEFORE state provided by collect_raw if available
+                if 'before_state_em1' in tx and tx['before_state_em1'] is not None:
+                    self.before_states[transaction_hash] = tx['before_state_em1']
 
     def _init_liteclient(self, lcparams: Optional[Dict[str, Any]]) -> None:
         if not lcparams:
@@ -281,9 +287,9 @@ class TraceOrderedRunner:
                 self.global_overrides[dest_addr] = new_state
                 # Build node for this generated transaction
                 tx_cell = em.transaction.to_cell()
-                tx_hex = tx_cell.get_hash().upper()
+                generated_transaction_hash = tx_cell.get_hash().upper()
                 node: Dict[str, Any] = {
-                    'tx_hash': hex_to_b64(tx_hex),
+                    'tx_hash': hex_to_b64(generated_transaction_hash),
                     'in_msg_hash': hex_to_b64(msg['msg_hash']) if 'msg_hash' in msg else None,
                     'in_msg_body_hash': hex_to_b64(msg.get('bodyhash')) if msg.get('bodyhash') else None,
                     'opcode': msg.get('opcode'),
@@ -321,7 +327,7 @@ class TraceOrderedRunner:
 
     def _process_emitted_children_with_override(self,
                                                 parent_block_key: BlockKey,
-                                                parent_hex: TxHashHex,
+                                                parent_transaction_hash: TxHashHex,
                                                 parent_tx: Dict[str, Any],
                                                 emitted_list: List[Dict[str, Any]],
                                                 out: List[Dict[str, Any]],
@@ -332,23 +338,23 @@ class TraceOrderedRunner:
         Returns list of built child nodes to append.
         """
         nodes: List[Dict[str, Any]] = []
-        expected = self.child_map.get(parent_hex, [])
-        links = self.child_link_map.get(parent_hex, {})
+        expected = self.child_map.get(parent_transaction_hash, [])
+        links = self.child_link_map.get(parent_transaction_hash, {})
         i = 0
         for cm in emitted_list:
             cm_b64 = hex_to_b64(cm['msg_hash'])
             cbody_b64 = hex_to_b64(cm.get('bodyhash')) if cm.get('bodyhash') else None
             cop = cm.get('opcode')
             if i < len(expected) and cm_b64 == expected[i]:
-                gc_hex = links.get(cm_b64)
-                if gc_hex:
+                child_transaction_hash = links.get(cm_b64)
+                if child_transaction_hash:
                     gc_dest = cm.get('dest').raw if cm.get('dest') is not None else None
-                    gc_node = self._process_tx(gc_hex, out, visited, cm_b64, cbody_b64, cop, gc_dest, cm.get('bounce'),
+                    gc_node = self._process_tx(child_transaction_hash, out, visited, cm_b64, cbody_b64, cop, gc_dest, cm.get('bounce'),
                                                cm.get('bounced'))
                     if gc_node is not None:
                         nodes.append(gc_node)
                 else:
-                    expected_meta = (self.message_meta.get(parent_hex, {}) or {}).get(cm_b64) or {}
+                    expected_meta = (self.message_meta.get(parent_transaction_hash, {}) or {}).get(cm_b64) or {}
                     dest = expected_meta.get('destination')
                     try:
                         if isinstance(dest, str):
@@ -374,10 +380,10 @@ class TraceOrderedRunner:
                 # Try position+destination override for this expected position
                 if i < len(expected):
                     expected_in_b64 = expected[i]
-                    gc_hex = links.get(expected_in_b64)
+                    child_transaction_hash = links.get(expected_in_b64)
                     expected_dest_raw = None
-                    if gc_hex:
-                        child_b64 = hex_to_b64(gc_hex)
+                    if child_transaction_hash:
+                        child_b64 = hex_to_b64(child_transaction_hash)
                         child_info = (self.original_tx_details or {}).get(child_b64) or {}
                         in_msg_info = child_info.get('in_msg') or {}
                         expected_dest = in_msg_info.get('destination')
@@ -387,8 +393,8 @@ class TraceOrderedRunner:
                         except Exception:
                             expected_dest_raw = expected_dest
                     emitted_dest_raw = cm.get('dest').raw if cm.get('dest') is not None else None
-                    if gc_hex and expected_dest_raw is not None and emitted_dest_raw == expected_dest_raw and 'cell' in cm:
-                        gc_idx = self.tx_index.get(gc_hex)
+                    if child_transaction_hash and expected_dest_raw is not None and emitted_dest_raw == expected_dest_raw and 'cell' in cm:
+                        gc_idx = self.tx_index.get(child_transaction_hash)
                         if gc_idx is not None:
                             gc_block_key, gc_tx = gc_idx
                             # Prepare account state
@@ -411,7 +417,7 @@ class TraceOrderedRunner:
                             # Build node for this overridden child and process its children recursively
                             mode = self._summarize_mode(tmp_out3)
                             gc_node = {
-                                'tx_hash': hex_to_b64(gc_hex),
+                                'tx_hash': hex_to_b64(child_transaction_hash),
                                 'in_msg_hash': cm_b64,
                                 'in_msg_body_hash': cbody_b64,
                                 'opcode': cop,
@@ -422,7 +428,7 @@ class TraceOrderedRunner:
                             }
                             # Recurse for grandchildren using this same logic
                             gc_children = self._process_emitted_children_with_override(
-                                gc_block_key, gc_hex, gc_tx, gc_out_msgs.get('out_msgs', []), out, visited
+                                gc_block_key, child_transaction_hash, gc_tx, gc_out_msgs.get('out_msgs', []), out, visited
                             )
                             gc_node['children'].extend(gc_children)
                             nodes.append(gc_node)
@@ -440,7 +446,7 @@ class TraceOrderedRunner:
         # Any remaining expected children are missed
         while i < len(expected):
             miss_b64 = expected[i]
-            exp_meta = (self.message_meta.get(parent_hex, {}) or {}).get(miss_b64) or {}
+            exp_meta = (self.message_meta.get(parent_transaction_hash, {}) or {}).get(miss_b64) or {}
             dest2 = exp_meta.get('destination')
             try:
                 if isinstance(dest2, str):
@@ -465,7 +471,7 @@ class TraceOrderedRunner:
         return nodes
 
     # ---------- Traversal ----------
-    def _process_tx(self, h: TxHashHex,
+    def _process_tx(self, transaction_hash: TxHashHex,
                     out: List[Dict[str, Any]],
                     visited: Set[TxHashHex],
                     in_msg_b64: Optional[str] = None,
@@ -474,12 +480,12 @@ class TraceOrderedRunner:
                     in_destination: Optional[str] = None,
                     in_bounce: Optional[bool] = None,
                     in_bounced: Optional[bool] = None) -> Optional[Dict[str, Any]]:
-        if h in visited:
+        if transaction_hash in visited:
             return None
-        visited.add(h)
-        idx = self.tx_index.get(h)
+        visited.add(transaction_hash)
+        idx = self.tx_index.get(transaction_hash)
         if idx is None:
-            logger.warning(f"Transaction from order not found in collected data: {h}")
+            logger.warning(f"Transaction from order not found in collected data: {transaction_hash}")
             return None
         block_key, tx = idx
         tx_tlb = Transaction().cell_unpack(tx['tx'], True)
@@ -487,8 +493,9 @@ class TraceOrderedRunner:
         account_addr = Address(f"{block_key[0]}:{hex(account_address).upper()[2:].zfill(64)}")
 
         em, _ = self._get_emulators(block_key)
-        # Use global override if present and sync with block state
-        state1 = self.global_overrides.get(account_addr) or self.account_states1[block_key][account_addr]
+        # Prefer per-tx BEFORE state captured in collect_raw; fallback to global override or account state
+        state1 = self.before_states.get(transaction_hash) or self.global_overrides.get(account_addr) or self.account_states1[block_key][account_addr]
+        # Sync the stored account state to the chosen BEFORE state
         self.account_states1[block_key][account_addr] = state1
 
         tmp_out, new_state1, _new_state2, out_msgs = emulate_tx_step(
@@ -509,7 +516,7 @@ class TraceOrderedRunner:
         # Build node for emulated tx
         mode_info = self._summarize_mode(tmp_out)
         node: Dict[str, Any] = {
-            'tx_hash': hex_to_b64(h),
+            'tx_hash': hex_to_b64(transaction_hash),
             'in_msg_hash': in_msg_b64,
             'in_msg_body_hash': in_msg_body_b64,
             'opcode': in_opcode,
@@ -521,8 +528,8 @@ class TraceOrderedRunner:
             'children': []
         }
 
-        expected_children_ordered = self.child_map.get(h, [])
-        link_map = self.child_link_map.get(h, {})
+        expected_children_ordered = self.child_map.get(transaction_hash, [])
+        link_map = self.child_link_map.get(transaction_hash, {})
 
         emitted_list = out_msgs.get('out_msgs', [])
         i = 0
@@ -531,15 +538,15 @@ class TraceOrderedRunner:
             body_b64 = hex_to_b64(m.get('bodyhash')) if m.get('bodyhash') else None
             opcode = m.get('opcode')
             if i < len(expected_children_ordered) and mh_b64 == expected_children_ordered[i]:
-                child_hex = link_map.get(mh_b64)
-                if child_hex:
+                child_transaction_hash = link_map.get(mh_b64)
+                if child_transaction_hash:
                     child_dest = m.get('dest').raw if m.get('dest') is not None else None
-                    child_node = self._process_tx(child_hex, out, visited, mh_b64, body_b64, opcode, child_dest,
+                    child_node = self._process_tx(child_transaction_hash, out, visited, mh_b64, body_b64, opcode, child_dest,
                                                   m.get('bounce'), m.get('bounced'))
                     if child_node is not None:
                         node['children'].append(child_node)
                 else:
-                    expected_meta = (self.message_meta.get(h, {}) or {}).get(mh_b64) or {}
+                    expected_meta = (self.message_meta.get(transaction_hash, {}) or {}).get(mh_b64) or {}
                     dest = expected_meta.get('destination')
                     try:
                         if isinstance(dest, str):
@@ -566,11 +573,11 @@ class TraceOrderedRunner:
                 # Try position+destination match to emulate the expected child using overridden in_msg
                 if i < len(expected_children_ordered):
                     expected_in_b64 = expected_children_ordered[i]
-                    child_hex = link_map.get(expected_in_b64)
+                    child_transaction_hash = link_map.get(expected_in_b64)
                     expected_dest_raw = None
-                    if child_hex:
+                    if child_transaction_hash:
                         # Fetch expected child's destination from toncenter tx details (in_msg.destination)
-                        child_b64 = hex_to_b64(child_hex)
+                        child_b64 = hex_to_b64(child_transaction_hash)
                         child_info = (self.original_tx_details or {}).get(child_b64) or {}
                         in_msg_info = child_info.get('in_msg') or {}
                         expected_dest = in_msg_info.get('destination')
@@ -581,9 +588,9 @@ class TraceOrderedRunner:
                             expected_dest_raw = expected_dest
                     # Compare destinations
                     emitted_dest_raw = m.get('dest').raw if m.get('dest') is not None else None
-                    if child_hex and expected_dest_raw is not None and emitted_dest_raw == expected_dest_raw and 'cell' in m:
+                    if child_transaction_hash and expected_dest_raw is not None and emitted_dest_raw == expected_dest_raw and 'cell' in m:
                         # Emulate the real child tx but override its in_msg with the emitted one
-                        child_idx = self.tx_index.get(child_hex)
+                        child_idx = self.tx_index.get(child_transaction_hash)
                         if child_idx is not None:
                             child_block_key, child_tx = child_idx
                             # Prepare child account state
@@ -607,7 +614,7 @@ class TraceOrderedRunner:
                             # Build child node and process its children inline using produced out msgs
                             child_mode = self._summarize_mode(tmp_out2)
                             child_node = {
-                                'tx_hash': hex_to_b64(child_hex),
+                                'tx_hash': hex_to_b64(child_transaction_hash),
                                 'in_msg_hash': mh_b64,
                                 'in_msg_body_hash': body_b64,
                                 'opcode': opcode,
@@ -621,7 +628,7 @@ class TraceOrderedRunner:
                             # Process child's emitted messages against its expected children with override logic
                             child_nodes = self._process_emitted_children_with_override(
                                 child_block_key,
-                                child_hex,
+                                child_transaction_hash,
                                 child_tx,
                                 child_out_msgs.get('out_msgs', []),
                                 out,
@@ -643,15 +650,15 @@ class TraceOrderedRunner:
 
         while i < len(expected_children_ordered):
             missing_b64 = expected_children_ordered[i]
-            expected_meta = (self.message_meta.get(h, {}) or {}).get(missing_b64) or {}
+            expected_meta = (self.message_meta.get(transaction_hash, {}) or {}).get(missing_b64) or {}
             dest3 = expected_meta.get('destination')
             try:
                 if isinstance(dest3, str):
                     dest3 = Address(dest3).raw
             except Exception:
                 pass
-            orig_child_hex = link_map.get(missing_b64)
-            orig_child_b64 = hex_to_b64(orig_child_hex) if orig_child_hex else None
+            original_child_transaction_hash = link_map.get(missing_b64)
+            orig_child_b64 = hex_to_b64(original_child_transaction_hash) if original_child_transaction_hash else None
             missed_node3 = {
                 'tx_hash': None,
                 'in_msg_hash': missing_b64,
@@ -715,10 +722,10 @@ class TraceOrderedRunner:
         order_list = tx_order_hex_upper or self.tx_order_hex_upper
         if not order_list:
             return out
-        root_h = order_list[0]
+        root_transaction_hash = order_list[0]
         root_in = self.original_trace_root.get('in_msg_hash') if self.original_trace_root else None
         # Root in_msg body/opcode/destination/bounce flags from original tx details
-        root_b64 = hex_to_b64(root_h)
+        root_b64 = hex_to_b64(root_transaction_hash)
         root_info = (self.original_tx_details or {}).get(root_b64) or {}
         root_in_msg = root_info.get('in_msg') or {}
         root_body = (root_in_msg.get('message_content') or {}).get('hash')
@@ -733,7 +740,7 @@ class TraceOrderedRunner:
             pass
 
         emu_root = self._process_tx(
-            root_h,
+            root_transaction_hash,
             out,
             visited=set(),
             in_msg_b64=root_in,
@@ -750,7 +757,7 @@ class TraceOrderedRunner:
         # Record original and emulated trace (no diff) into failed_traces.json
         self.failed_traces.append({
             'type': 'trace_tree_comparison',
-            'root_tx': hex_to_b64(root_h),
+            'root_tx': hex_to_b64(root_transaction_hash),
             'original_trace': self.original_trace_root,
             'emulated_trace': self.emulated_trace_root,
             'not_presented': not_presented,
