@@ -9,6 +9,7 @@ from loguru import logger
 
 from tonemuso.emulation import init_emulators, emulate_tx_step, emulate_tx_step_with_in_msg
 from tonemuso.utils import b64_to_hex, hex_to_b64
+from tonemuso.diff import get_shard_account_diff, make_json_dumpable
 
 # Type aliases for readability
 BlockKey = Tuple[int, int, int, int]
@@ -493,8 +494,10 @@ class TraceOrderedRunner:
         account_addr = Address(f"{block_key[0]}:{hex(account_address).upper()[2:].zfill(64)}")
 
         em, _ = self._get_emulators(block_key)
-        # Prefer per-tx BEFORE state captured in collect_raw; fallback to global override or account state
-        state1 = self.before_states.get(transaction_hash) or self.global_overrides.get(account_addr) or self.account_states1[block_key][account_addr]
+        # Priority metter!!!
+        state1 = (self.global_overrides.get(account_addr)  # if any other tx come to this account_addr in past
+                  or self.before_states.get(transaction_hash)
+                  or self.account_states1[block_key][account_addr])
         # Sync the stored account state to the chosen BEFORE state
         self.account_states1[block_key][account_addr] = state1
 
@@ -513,6 +516,25 @@ class TraceOrderedRunner:
         out.extend(tmp_out)
         self.account_states1[block_key][account_addr] = new_state1
 
+        # Compute account state diff vs AFTER state from second emulator (if available from collect_raw)
+        account_diff_obj = None
+        try:
+            after_state_em2 = tx.get('after_state_em2')
+            if after_state_em2 is not None and new_state1 is not None:
+                sa_diff = get_shard_account_diff(new_state1, after_state_em2)
+                # Also compute whether unchanged emulator produced the same tx hash (if collected)
+                try:
+                    unchanged_hash = tx.get('unchanged_emulator_tx_hash')
+                    expected_hash = tx['tx'].get_hash()
+                    account_diff_obj = {
+                        'data': make_json_dumpable(sa_diff.to_dict()),
+                        'account_emulator_tx_hash_match': (unchanged_hash == expected_hash)
+                    }
+                except Exception:
+                    account_diff_obj = {'data': make_json_dumpable(sa_diff.to_dict())}
+        except Exception as e:
+            logger.error(f"ACCOUNT DIFF ERROR for tx {transaction_hash}: {e}")
+
         # Build node for emulated tx
         mode_info = self._summarize_mode(tmp_out)
         node: Dict[str, Any] = {
@@ -527,6 +549,8 @@ class TraceOrderedRunner:
             **({'diff': mode_info['diff']} if 'diff' in mode_info else {}),
             'children': []
         }
+        if account_diff_obj is not None:
+            node['account_diff'] = account_diff_obj
 
         expected_children_ordered = self.child_map.get(transaction_hash, [])
         link_map = self.child_link_map.get(transaction_hash, {})

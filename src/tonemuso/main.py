@@ -37,8 +37,54 @@ if TXS_TO_PROCESS is not None:
 
 
 def collect_raw(data):
+    # Emulate transactions to attach BEFORE state for emulator1 and AFTER state for emulator2 per tx (trace mode)
+    block, initial_account_state, txs = data
+
+    # Initialize emulators similar to process_blocks, respecting optional C7_REWRITE
+    try:
+        from tonemuso.emulation import init_emulators, emulate_tx_step
+        cfg_env = os.getenv("C7_REWRITE", None)
+        cfg_override = json.loads(cfg_env) if cfg_env else None
+        em, em2 = init_emulators(block, cfg_override)
+    except Exception as e:
+        logger.error(f"Failed to init emulators in collect_raw: {e}")
+        # Fallback: return raw data unchanged
+        return [data]
+
+    account_state_em1 = initial_account_state
+    account_state_em2 = initial_account_state
+
+    for tx in txs:
+        try:
+            # BEFORE state for primary emulator
+            before_state_em1 = account_state_em1
+            # Emulate one step to advance both emulators
+            _out, account_state_em1, account_state_em2 = emulate_tx_step(
+                block,
+                tx,
+                em,
+                em2,
+                account_state_em1,
+                account_state_em2,
+                LOGLEVEL,
+                COLOR_SCHEMA
+            )
+            # Attach BEFORE/AFTER states and unchanged emulator tx hash (if available)
+            tx['before_state_em1'] = before_state_em1
+            tx['after_state_em2'] = account_state_em2
+            try:
+                tx['unchanged_emulator_tx_hash'] = em2.transaction.get_hash() if (em2 is not None and em2.transaction is not None) else None
+            except Exception:
+                tx['unchanged_emulator_tx_hash'] = None
+        except Exception as e:
+            logger.error(f"EMULATOR ERROR in collect_raw: {e}")
+            # Attach best-known states and continue
+            tx['before_state_em1'] = account_state_em1
+            tx['after_state_em2'] = account_state_em2
+            continue
+
     # Return as a list so BlockScanner puts it into out_queue
-    return [data]
+    return [(block, initial_account_state, txs)]
 
 
 @curry
