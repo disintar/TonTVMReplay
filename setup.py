@@ -15,7 +15,7 @@ setup(
     author="Disintar LLP",
     author_email="andrey@head-labs.com",
     description="Emulate TON blockchain",
-    long_description=long_description,
+         long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/disintar/ton-emuso",
     project_urls={
@@ -30,7 +30,7 @@ setup(
     ],
     setup_requires=install_requires,
     install_requires=install_requires,
-    python_requires=">3.8,<3.12",
+    python_requires=">3.8,<=3.13",
     packages=find_packages(
         where='src',  # '.' by default
     ),

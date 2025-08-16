@@ -17,8 +17,7 @@ permissions:
 
 jobs:
   emulation:
-    name:
-    runs-on: emuso
+    runs-on: ubuntu-latest
     timeout-minutes: 1440
 
     steps:
