@@ -434,11 +434,12 @@ class TraceOrderedRunner:
                                 self.color_schema, True
                             )
                             out.extend(tmp_out3)
-                            # Update state and global overrides
-                            self.account_states1[gc_block_key][gc_account_addr] = new_state_gc
-                            self.global_overrides[gc_account_addr] = new_state_gc
-                            # Build node for this overridden child and process its children recursively
+                            # Determine mode and update state; save to global_overrides only for new/error
                             mode = self._summarize_mode(tmp_out3)
+                            self.account_states1[gc_block_key][gc_account_addr] = new_state_gc
+                            if mode.get('mode') in ('new_transaction', 'error'):
+                                self.global_overrides[gc_account_addr] = new_state_gc
+                            # Build node for this overridden child and process its children recursively
                             gc_node = {
                                 'tx_hash': hex_to_b64(child_transaction_hash),
                                 'in_msg_hash': cm_b64,
@@ -654,11 +655,12 @@ class TraceOrderedRunner:
                                 self.color_schema, True
                             )
                             out.extend(tmp_out2)
-                            # Update states and global override
-                            self.account_states1[child_block_key][child_account_addr] = new_state_child
-                            self.global_overrides[child_account_addr] = new_state_child
-                            # Build child node and process its children inline using produced out msgs
+                            # Determine mode and update states; save to global_overrides only for new/error
                             child_mode = self._summarize_mode(tmp_out2)
+                            self.account_states1[child_block_key][child_account_addr] = new_state_child
+                            if child_mode.get('mode') in ('new_transaction', 'error'):
+                                self.global_overrides[child_account_addr] = new_state_child
+                            # Build child node and process its children inline using produced out msgs
                             child_node = {
                                 'tx_hash': hex_to_b64(child_transaction_hash),
                                 'in_msg_hash': mh_b64,
