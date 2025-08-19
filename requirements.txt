@@ -1,4 +1,5 @@
-tonpy==0.0.0.1.3a0
+tonpy==0.0.0.1.3b0
 deepdiff
 cytoolz
 requests
+tqdm>=4.65.0

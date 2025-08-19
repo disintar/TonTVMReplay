@@ -1,6 +1,6 @@
 # Copyright (c) 2024 Disintar LLP Licensed under the Apache License Version 2.0
 from typing import Dict, Any, List, Tuple, Optional, Set
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 
 from tonpy import Cell, LiteClient, begin_cell, BlockId, Address
 from tonpy.tvm.not_native.emulator_extern import EmulatorExtern
@@ -41,12 +41,12 @@ class TraceOrderedRunner:
                  toncenter_tx_details: Optional[Dict[str, Any]] = None,
                  lcparams: Optional[Dict[str, Any]] = None):
         # Indices and caches
-        self.tx_index: Dict[TxHashHex, Tuple[BlockKey, Dict[str, Any]]] = {}
-        self.blocks: Dict[BlockKey, Dict[str, Any]] = {}
-        self.block_emulators: Dict[BlockKey, Tuple[EmulatorExtern, Optional[EmulatorExtern]]] = {}
-        self.account_states1: Dict[BlockKey, Dict[Address, Cell]] = defaultdict(dict)
+        self.tx_index: Dict[TxHashHex, Tuple[BlockKey, Dict[str, Any]]] = OrderedDict()
+        self.blocks: Dict[BlockKey, Dict[str, Any]] = OrderedDict()
+        self.block_emulators: Dict[BlockKey, Tuple[EmulatorExtern, Optional[EmulatorExtern]]] = OrderedDict()
+        self.account_states1: Dict[BlockKey, Dict[Address, Cell]] = defaultdict(OrderedDict)
         # Per-transaction BEFORE states captured in main.collect_raw emulation
-        self.before_states: Dict[TxHashHex, Cell] = {}
+        self.before_states: Dict[TxHashHex, Cell] = OrderedDict()
 
         # Config
         self.config_override = config_override
@@ -56,18 +56,20 @@ class TraceOrderedRunner:
 
         # Results and global state overrides
         self.failed_traces: List[Dict[str, Any]] = []
-        self.global_overrides: Dict[Address, Cell] = {}
+        self.global_overrides: Dict[Address, Cell] = OrderedDict()
 
-        # Child maps built from toncenter trace map
-        self.child_map: Dict[TxHashHex, List[MsgHashB64]] = {}
-        self.child_link_map: Dict[TxHashHex, Dict[MsgHashB64, TxHashHex]] = {}
+        # Store original tx details and build message metadata for quick lookup
+        self.original_tx_details: Dict[str, Any] = OrderedDict(toncenter_tx_details or {})
+        self._build_message_meta()
+
+        # Child maps built from toncenter trace map (will be sorted by in_msg.created_lt)
+        self.child_map: Dict[TxHashHex, List[MsgHashB64]] = OrderedDict()
+        self.child_link_map: Dict[TxHashHex, Dict[MsgHashB64, TxHashHex]] = OrderedDict()
         self._build_child_maps(toncenter_tx_map)
+
         # Keep original trace root for reporting (transformed to required TX schema)
         self.original_trace_root: Optional[Dict[str, Any]] = None
         self.emulated_trace_root: Optional[Dict[str, Any]] = None
-        # Store original tx details and build message metadata for quick lookup
-        self.original_tx_details: Dict[str, Any] = toncenter_tx_details or {}
-        self._build_message_meta()
         if isinstance(toncenter_tx_map, dict) and 'tx_hash' in toncenter_tx_map:
             self.original_trace_root = self._transform_original_trace(toncenter_tx_map)
 
@@ -101,14 +103,14 @@ class TraceOrderedRunner:
 
     def _build_message_meta(self) -> None:
         # Build mapping: parent transaction_hash (hex) -> { in_msg_b64 -> { opcode, destination, body_hash } }
-        self.message_meta: Dict[TxHashHex, Dict[MsgHashB64, Dict[str, Any]]] = {}
+        self.message_meta: Dict[TxHashHex, Dict[MsgHashB64, Dict[str, Any]]] = OrderedDict()
         try:
             for b64_tx, info in (self.original_tx_details or {}).items():
                 parent_transaction_hash = b64_to_hex(b64_tx)
                 out = info.get('out_msgs') or []
                 if not out:
                     continue
-                meta_map: Dict[MsgHashB64, Dict[str, Any]] = {}
+                meta_map: Dict[MsgHashB64, Dict[str, Any]] = OrderedDict()
                 for m in out:
                     in_b64 = m.get('hash')  # outgoing message hash in base64
                     if not isinstance(in_b64, str):
@@ -179,11 +181,32 @@ class TraceOrderedRunner:
             def walk(node: Dict[str, Any]):
                 parent_transaction_hash = b64_to_hex(node.get('tx_hash')) if node.get('tx_hash') else None
                 children = node.get('children') or []
+
+                # Sort children by their in_msg.created_lt from original_tx_details to ensure deterministic order
+                def child_created_lt(ch_node: Dict[str, Any]) -> int:
+                    try:
+                        tx_b64 = ch_node.get('tx_hash')
+                        if isinstance(tx_b64, str):
+                            tx_info = (self.original_tx_details or {}).get(tx_b64) or {}
+                            in_msg = tx_info.get('in_msg') or {}
+                            clt = in_msg.get('created_lt')
+                            if isinstance(clt, str):
+                                return int(clt)
+                            if isinstance(clt, int):
+                                return clt
+                    except Exception:
+                        pass
+                    return 0
+
+                try:
+                    children_sorted = sorted([c for c in children if isinstance(c, dict)], key=child_created_lt)
+                except Exception:
+                    # Fallback to original order if sorting fails
+                    children_sorted = [c for c in children if isinstance(c, dict)]
+
                 child_b64s: List[MsgHashB64] = []
-                link_map: Dict[MsgHashB64, TxHashHex] = {}
-                for ch in children:
-                    if not isinstance(ch, dict):
-                        continue
+                link_map: Dict[MsgHashB64, TxHashHex] = OrderedDict()
+                for ch in children_sorted:
                     in_b = ch.get('in_msg_hash')
                     tx_b64 = ch.get('tx_hash')
                     if isinstance(in_b, str):
@@ -193,9 +216,8 @@ class TraceOrderedRunner:
                 if parent_transaction_hash:
                     self.child_map[parent_transaction_hash] = child_b64s
                     self.child_link_map[parent_transaction_hash] = link_map
-                for ch in children:
-                    if isinstance(ch, dict):
-                        walk(ch)
+                for ch in children_sorted:
+                    walk(ch)
 
             walk(toncenter_tx_map)
         except Exception as e:
@@ -412,11 +434,12 @@ class TraceOrderedRunner:
                                 self.color_schema, True
                             )
                             out.extend(tmp_out3)
-                            # Update state and global overrides
-                            self.account_states1[gc_block_key][gc_account_addr] = new_state_gc
-                            self.global_overrides[gc_account_addr] = new_state_gc
-                            # Build node for this overridden child and process its children recursively
+                            # Determine mode and update state; save to global_overrides only for new/error
                             mode = self._summarize_mode(tmp_out3)
+                            self.account_states1[gc_block_key][gc_account_addr] = new_state_gc
+                            if mode.get('mode') in ('new_transaction', 'error'):
+                                self.global_overrides[gc_account_addr] = new_state_gc
+                            # Build node for this overridden child and process its children recursively
                             gc_node = {
                                 'tx_hash': hex_to_b64(child_transaction_hash),
                                 'in_msg_hash': cm_b64,
@@ -632,11 +655,12 @@ class TraceOrderedRunner:
                                 self.color_schema, True
                             )
                             out.extend(tmp_out2)
-                            # Update states and global override
-                            self.account_states1[child_block_key][child_account_addr] = new_state_child
-                            self.global_overrides[child_account_addr] = new_state_child
-                            # Build child node and process its children inline using produced out msgs
+                            # Determine mode and update states; save to global_overrides only for new/error
                             child_mode = self._summarize_mode(tmp_out2)
+                            self.account_states1[child_block_key][child_account_addr] = new_state_child
+                            if child_mode.get('mode') in ('new_transaction', 'error'):
+                                self.global_overrides[child_account_addr] = new_state_child
+                            # Build child node and process its children inline using produced out msgs
                             child_node = {
                                 'tx_hash': hex_to_b64(child_transaction_hash),
                                 'in_msg_hash': mh_b64,

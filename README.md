@@ -21,6 +21,7 @@
 19. `TONCENTER_MSG_HASH` [OPTIONAL] - Message hash (hex or base64) to trace if TONCENTER_TX_HASH is not provided
 20. `TONCENTER_API_KEY` [OPTIONAL] - Toncenter API key; if set, requests include headers {'X-API-Key': <key>, 'Content-Type': 'application/json', 'accept': 'application/json'}
 21. `TONCENTER_API` [OPTIONAL] - Toncenter API base URL (default: https://toncenter.com/api/v3)
+22. `TONCENTER_TRACES_BY_MASTERS` [OPTIONAL] - Emulate many traces from Toncenter within a masterchain logical-time (LT) range (`FROM_SEQNO` and `TO_SEQNO`)
 
 ## Color schema
 
