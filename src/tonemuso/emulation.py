@@ -72,6 +72,7 @@ def extract_message_info(tx: Cell):
                         opcode = hex(send_body.load_uint(32))
 
                 dest = message_parsed['x']['info']['dest']
+                created_lt =  message_parsed['x']['info']['created_lt']
                 dest = Address(f"{dest['workchain_id']}:{dest['address'].zfill(64)}")
                 answer['out_msgs'].append({
                     'msg_hash': msg_hash,
@@ -82,8 +83,9 @@ def extract_message_info(tx: Cell):
                     'cell': msg,
                     'bounce': message_parsed['x']['info']['bounce'],
                     'bounced': message_parsed['x']['info']['bounced'],
+                    'created_lt': created_lt
                 })
-
+    answer['out_msgs'] = list(sorted(answer['out_msgs'], key=lambda x: x['created_lt']))
     return answer
 
 
@@ -259,8 +261,6 @@ def emulate_tx_step(block: Dict[str, Any],
     except Exception as e:
         logger.error(f"EMULATOR ERROR, complete fail emulation of em1: {tx['tx'].get_hash()}")
         new_state_em2 = account_state_em2
-        if go_as_success:
-            print("LOL")
         assert not go_as_success
 
     if go_as_success:
