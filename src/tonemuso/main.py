@@ -9,10 +9,13 @@ import os
 import argparse
 import base64
 import requests
+from multiprocessing import get_context
+from tqdm import tqdm
 from tonemuso.diff import get_diff, get_colored_diff, make_json_dumpable, get_shard_account_diff
 from queue import Empty as QueueEmpty
 from tonemuso.trace_runner import TraceOrderedRunner
 from tonemuso.utils import b64_to_hex, hex_to_b64
+from tonpy.autogen.block import Block, BlockInfo
 
 LOGLEVEL = int(os.getenv("EMUSO_LOGLEVEL", 1))
 COLOR_SCHEMA = str(os.getenv("COLOR_SCHEMA_PATH", ''))
@@ -32,8 +35,6 @@ if TXS_TO_PROCESS is not None:
     TXS_WHITELIST = set()
     for tx in TXS_TO_PROCESS:
         TXS_WHITELIST.add(tx['hash'])
-
-
 
 
 def collect_raw(data):
@@ -73,7 +74,8 @@ def collect_raw(data):
             tx['before_state_em1'] = before_state_em1
             tx['after_state_em2'] = account_state_em2
             try:
-                tx['unchanged_emulator_tx_hash'] = em2.transaction.get_hash() if (em2 is not None and em2.transaction is not None) else None
+                tx['unchanged_emulator_tx_hash'] = em2.transaction.get_hash() if (
+                            em2 is not None and em2.transaction is not None) else None
             except Exception:
                 tx['unchanged_emulator_tx_hash'] = None
         except Exception as e:
@@ -114,7 +116,9 @@ def process_blocks(data, config_override: dict = None, trace_whitelist: set = No
     # Primary emulator (possibly with C7 rewrite)
     em = EmulatorExtern(os.getenv("EMULATOR_PATH"), config)
     em.set_rand_seed(block['rand_seed'])
-    prev_block_data = [list(reversed(block['prev_block_data'][0])), block['prev_block_data'][1]]
+    prev_block_data = [list(reversed(block['prev_block_data'][0])),
+                       list(reversed(block['prev_block_data'][1])),
+                       block['prev_block_data'][2]]
     em.set_prev_blocks_info(prev_block_data)
     em.set_libs(VmDict(256, False, cell_root=Cell(block['libs'])))
 
@@ -210,6 +214,37 @@ def process_result(outq):
     return tmp_s, tmp_u, tmp_w
 
 
+def _process_one_trace_worker(args):
+    """
+    Multiprocessing worker to emulate a single trace with TraceOrderedRunner.
+    args: (tidx, trace_obj, raw_chunks_all, lcparams, loglevel, color_schema, c7_env_str)
+    Returns: list of failed_traces entries (may be empty).
+    """
+    try:
+        tidx, t, raw_chunks_all, lcparams, loglevel, color_schema, c7_env = args
+        config_override = json.loads(c7_env) if c7_env else None
+        tx_order = t.get("transactions_order", [])
+        tx_order_list = [b64_to_hex(h).upper() for h in tx_order]
+        runner_local = TraceOrderedRunner(
+            raw_chunks=raw_chunks_all,
+            config_override=config_override,
+            loglevel=loglevel,
+            color_schema=color_schema,
+            tx_order_hex_upper=tx_order_list or [],
+            toncenter_tx_map=t.get("trace"),
+            toncenter_tx_details=t.get("transactions", {}),
+            lcparams=lcparams
+        )
+        runner_local.run(tx_order_list or [])
+        return runner_local.failed_traces or []
+    except Exception as e:
+        try:
+            logger.error(f"Error processing trace #{args[0]} in worker: {e}")
+        except Exception:
+            pass
+        return []
+
+
 def main():
     # Use environment variables for configuration (no CLI flags for tx/msg hash / toncenter)
     toncenter_tx_hash = os.getenv("TONCENTER_TX_HASH", None)
@@ -245,6 +280,259 @@ def main():
     else:
         from_seqno = int(from_seqno)
 
+    # Multi-trace by masters: if TONCENTER_TRACES_BY_MASTERS is set, fetch and run traces in the LT range
+    if os.getenv("TONCENTER_TRACES_BY_MASTERS"):
+        try:
+            # Resolve masterchain blocks to get start_lt and end_lt
+            # Masterchain shard is 0x8000000000000000 and workchain is -1
+            start_blk_id_ext = lc.lookup_block(BlockId(-1, 0x8000000000000000, int(from_seqno))).blk_id
+            end_blk_id_ext = lc.lookup_block(BlockId(-1, 0x8000000000000000, int(to_seqno))).blk_id
+
+            start_blk_cell = lc.get_block(start_blk_id_ext)
+            end_blk_cell = lc.get_block(end_blk_id_ext)
+
+            start_blk = Block().cell_unpack(start_blk_cell)
+            end_blk = Block().cell_unpack(end_blk_cell)
+
+            start_info = BlockInfo().cell_unpack(start_blk.info, True)
+            end_info = BlockInfo().cell_unpack(end_blk.info, True)
+
+            start_lt = int(start_info.start_lt)
+            end_lt = int(end_info.end_lt)
+        except Exception as e:
+            logger.error(f"Failed to compute start/end lt via liteserver for seqno range {from_seqno}-{to_seqno}: {e}")
+            return
+
+        toncenter_api_key = os.getenv("TONCENTER_API_KEY", None)
+        toncenter_api = os.getenv("TONCENTER_API", "https://toncenter.com/api/v3")
+        headers = None
+        if toncenter_api_key:
+            headers = {
+                'X-API-Key': toncenter_api_key,
+                'Content-Type': 'application/json',
+                'accept': 'application/json'
+            }
+        url = f"{toncenter_api.rstrip('/')}/traces"
+
+        all_traces = []
+        offset = 0
+        limit = 1000
+        downloaded = 0
+        pages = 0
+        pbar = tqdm(total=None, unit="tr", desc="Downloading traces", disable=False)
+        while True:
+            params = {
+                'start_lt': start_lt,
+                'end_lt': end_lt,
+                'include_actions': 'false',
+                'limit': limit,
+                'offset': offset,
+                'sort': 'desc'
+            }
+            try:
+                resp = requests.get(url, params=params, headers=headers, timeout=60)
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception as e:
+                logger.error(f"Failed to query toncenter traces page offset={offset}: {e}")
+                break
+
+            page_traces = []
+            if isinstance(data, dict):
+                page_traces = data.get('traces', []) or []
+            if not page_traces:
+                if LOGLEVEL > 1:
+                    logger.info(f"No more traces. Pages fetched: {pages}, total downloaded: {downloaded}")
+                break
+            all_traces.extend(page_traces)
+            downloaded += len(page_traces)
+            pages += 1
+            if LOGLEVEL > 1:
+                logger.info(
+                    f"Fetched page {pages} (offset={offset}) with {len(page_traces)} traces; total so far: {downloaded}")
+            pbar.update(len(page_traces))
+            offset += limit
+        try:
+            pbar.close()
+        except Exception:
+            pass
+
+        if not all_traces:
+            logger.error("No traces returned from toncenter for given LT range")
+            return
+        if LOGLEVEL > 0:
+            logger.warning(
+                f"Total traces downloaded: {len(all_traces)} in {pages} page(s) for LT range [{start_lt}, {end_lt}]")
+
+        # Build a union of all blocks referenced by all traces
+        union_blocks = set()
+        for trace in all_traces:
+            try:
+                tx_map = trace.get("transactions", {})
+                for _, txo in tx_map.items():
+                    bref = txo.get("block_ref") or {}
+                    wc = bref.get("workchain")
+                    shard_hex = bref.get("shard")
+                    seqno_b = bref.get("seqno")
+                    if wc is not None and shard_hex is not None and seqno_b is not None:
+                        try:
+                            shard_int = int(shard_hex, 16) if isinstance(shard_hex, str) else int(shard_hex)
+                            union_blocks.add((int(wc), shard_int, int(seqno_b)))
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.error(f"Failed to collect blocks for a trace: {e}")
+
+        blocks_to_load_all = []
+        for wc, shard_int, seq in sorted(union_blocks):
+            try:
+                blk = lc.lookup_block(BlockId(wc, shard_int, seq)).blk_id
+                blocks_to_load_all.append(blk)
+            except Exception as e:
+                logger.error(f"Failed to lookup block ({wc},{hex(shard_int)},{seq}): {e}")
+
+        if not blocks_to_load_all:
+            logger.error("No blocks resolved to load for the collected traces")
+            return
+
+        # Scan all required blocks ONCE and collect raw data
+        outq = Queue()
+        raw_proc = collect_raw
+        scanner = BlockScanner(
+            lcparams=lcparams,
+            start_from=None,
+            load_to=None,
+            nproc=int(os.getenv("NPROC", 10)),
+            loglevel=LOGLEVEL,
+            chunk_size=int(os.getenv("CHUNK_SIZE", 2)),
+            tx_chunk_size=int(os.getenv("TX_CHUNK_SIZE", 40000)),
+            raw_process=raw_proc,
+            out_queue=outq,
+            only_mc_blocks=bool(os.getenv("ONLYMC_BLOCK", False)),
+            parse_txs_over_ls=True,
+            blocks_to_load=blocks_to_load_all
+        )
+        scanner.start()
+
+        raw_chunks_all = []
+        while not scanner.done:
+            while True:
+                try:
+                    raw_chunk = outq.get_nowait()
+                    raw_chunks_all.extend(raw_chunk)
+                except QueueEmpty:
+                    break
+            sleep(1)
+        # Drain remaining
+        while True:
+            try:
+                raw_chunk = outq.get_nowait()
+                raw_chunks_all.extend(raw_chunk)
+            except QueueEmpty:
+                break
+
+        # Now run TraceOrderedRunner for each trace using the same raw_chunks_all (multiprocessing with spawn + tqdm)
+        max_workers = int(os.getenv("NPROC", 10))
+        aggregated_failed: list = []
+        pbar2 = tqdm(total=len(all_traces), desc="Emulating traces", unit="trace", disable=False)
+        try:
+            ctx = get_context("spawn")
+            c7_env = os.getenv("C7_REWRITE")
+            args_list = [
+                (idx, trace, raw_chunks_all, lcparams, LOGLEVEL, COLOR_SCHEMA, c7_env)
+                for idx, trace in enumerate(all_traces)
+            ]
+            with ctx.Pool(processes=max_workers) as pool:
+                for res in pool.imap_unordered(
+                        _process_one_trace_worker,
+                        args_list,
+                        chunksize=10):
+                    if res:
+                        aggregated_failed.extend(res)
+                    pbar2.update(1)
+
+            # Persist failed traces once
+            try:
+                if aggregated_failed:
+                    # Merge with existing file if present
+                    existing = []
+                    try:
+                        with open("failed_traces.json", "r") as f:
+                            existing = json.load(f)
+                            if not isinstance(existing, list):
+                                existing = []
+                    except Exception:
+                        existing = []
+                    existing.extend(aggregated_failed)
+                    with open("failed_traces.json", "w") as f:
+                        json.dump(existing, f)
+            except Exception as e:
+                logger.error(f"Failed to update failed_traces.json: {e}")
+
+        finally:
+            try:
+                pbar2.close()
+            except Exception:
+                pass
+
+            # Compute and print final summary for TONCENTER_TRACES_BY_MASTERS
+            try:
+                total_success = 0
+                total_warnings = 0
+                total_unsuccess = 0
+                total_new = 0
+                total_missed = 0
+                trace_success_count = 0
+                trace_unsuccess_count = 0
+
+                def _count_modes_tree(node):
+                    from collections import Counter
+                    cnt = Counter()
+                    def dfs(n):
+                        if not isinstance(n, dict):
+                            return
+                        mode = n.get('mode')
+                        if mode == 'success':
+                            cnt['success'] += 1
+                        elif mode == 'warning':
+                            cnt['warnings'] += 1
+                        elif mode == 'error':
+                            cnt['unsuccess'] += 1
+                        elif mode == 'new_transaction':
+                            cnt['new'] += 1
+                        elif mode == 'missed_transaction':
+                            cnt['missed'] += 1
+                        for ch in (n.get('children') or []):
+                            dfs(ch)
+                    dfs(node)
+                    return cnt
+
+                for entry in aggregated_failed or []:
+                    emu = entry.get('emulated_trace') or {}
+                    c = _count_modes_tree(emu)
+                    total_success += c.get('success', 0)
+                    total_warnings += c.get('warnings', 0)
+                    total_unsuccess += c.get('unsuccess', 0)
+                    total_new += c.get('new', 0)
+                    total_missed += c.get('missed', 0)
+                    # Add also transactions from original trace that are not presented in emulated tree
+                    not_presented = entry.get('not_presented') or []
+                    total_missed += len(not_presented)
+
+                    # Per-trace success means: all nodes are 'success' (no warnings/errors/new/missed) and no not_presented
+                    if emu and c.get('warnings', 0) == 0 and c.get('unsuccess', 0) == 0 and c.get('new', 0) == 0 and c.get('missed', 0) == 0 and len(not_presented) == 0:
+                        trace_success_count += 1
+                    else:
+                        trace_unsuccess_count += 1
+
+                logger.warning(
+                    f"Final emulator status: {total_success} success, {total_unsuccess} unsuccess, {total_warnings} warnings, {total_new} new, {total_missed} missed; traces: {trace_success_count} success, {trace_unsuccess_count} unsuccess")
+            except Exception as e:
+                logger.error(f"Failed to compute final status from traces emulation: {e}")
+
+            # Done with multi-trace mode
+            return
+
     outq = Queue()
     config_override = os.getenv("C7_REWRITE", None)
     if config_override is not None:
@@ -254,7 +542,8 @@ def main():
     TRACE_TXS = None
     TX_ORDER_LIST = None
     # Determine if we are in trace mode (by tx hash or msg hash)
-    trace_query_provided = bool((toncenter_tx_hash and toncenter_tx_hash.strip()) or (toncenter_msg_hash and toncenter_msg_hash.strip()))
+    trace_query_provided = bool(
+        (toncenter_tx_hash and toncenter_tx_hash.strip()) or (toncenter_msg_hash and toncenter_msg_hash.strip()))
     if trace_query_provided:
         # Prepare param for toncenter (it accepts hex as in examples). Keep as-is.
         param_key = "tx_hash" if (toncenter_tx_hash and toncenter_tx_hash.strip()) else "msg_hash"
@@ -412,6 +701,7 @@ def main():
                 def _count_modes(node):
                     from collections import Counter
                     cnt = Counter()
+
                     def dfs(n):
                         if not isinstance(n, dict):
                             return
@@ -428,6 +718,7 @@ def main():
                             cnt['missed'] += 1
                         for ch in n.get('children', []) or []:
                             dfs(ch)
+
                     dfs(emu)
                     return cnt
 
@@ -440,7 +731,8 @@ def main():
                 # Add also transactions from original trace that are not presented in emulated tree
                 not_presented = trace_entries[0].get('not_presented') or []
                 missed_cnt += len(not_presented)
-                logger.warning(f"Final emulator status: {success} success, {unsuccess} unsuccess, {warnings} warnings, {new_cnt} new, {missed_cnt} missed")
+                logger.warning(
+                    f"Final emulator status: {success} success, {unsuccess} unsuccess, {warnings} warnings, {new_cnt} new, {missed_cnt} missed")
                 # Skip the default final log below by returning early
                 return
         except Exception as e:
