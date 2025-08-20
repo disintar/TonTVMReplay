@@ -223,6 +223,7 @@ _W_LOGLEVEL = None
 _W_COLOR_SCHEMA = None
 _W_C7_ENV = None
 
+
 def _worker_init(preindexed, lcparams, loglevel, color_schema, c7_env):
     global _W_PREINDEX, _W_LCPARAMS, _W_LOGLEVEL, _W_COLOR_SCHEMA, _W_C7_ENV
     _W_PREINDEX = preindexed
@@ -339,6 +340,8 @@ def main():
         downloaded = 0
         pages = 0
         pbar = tqdm(total=None, unit="tr", desc="Downloading traces", disable=False)
+
+        num_run = 0
         while True:
             params = {
                 'start_lt': start_lt,
@@ -354,7 +357,12 @@ def main():
                 data = resp.json()
             except Exception as e:
                 logger.error(f"Failed to query toncenter traces page offset={offset}: {e}")
-                break
+
+                if num_run > 10:
+                    raise ValueError(f"Can't get traces from toncenter for given LT range")
+                else:
+                    num_run += 1
+                    continue
 
             page_traces = []
             if isinstance(data, dict):
@@ -567,7 +575,7 @@ def main():
                     # Per-trace success means: all nodes are 'success' (no warnings/errors/new/missed) and no not_presented
                     if emu and c.get('warnings', 0) == 0 and c.get('unsuccess', 0) == 0 and c.get('new',
                                                                                                   0) == 0 and c.get(
-                            'missed', 0) == 0 and len(not_presented) == 0:
+                        'missed', 0) == 0 and len(not_presented) == 0:
                         trace_success_count += 1
                     else:
                         trace_unsuccess_count += 1
