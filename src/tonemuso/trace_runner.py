@@ -32,19 +32,22 @@ class TraceOrderedRunner:
     """
 
     def __init__(self,
-                 raw_chunks: List[Tuple[Dict[str, Any], Cell, List[Dict[str, Any]]]],
+                 raw_chunks: Optional[List[Tuple[Dict[str, Any], Cell, List[Dict[str, Any]]]]],
                  config_override: Optional[Dict[str, Any]],
                  loglevel: int,
                  color_schema: Optional[Dict[str, Any]],
                  tx_order_hex_upper: Optional[List[str]] = None,
                  toncenter_tx_map: Optional[Dict[str, Any]] = None,
                  toncenter_tx_details: Optional[Dict[str, Any]] = None,
-                 lcparams: Optional[Dict[str, Any]] = None):
+                 lcparams: Optional[Dict[str, Any]] = None,
+                 preindexed: Optional[Dict[str, Any]] = None):
         # Indices and caches
         self.tx_index: Dict[TxHashHex, Tuple[BlockKey, Dict[str, Any]]] = OrderedDict()
         self.blocks: Dict[BlockKey, Dict[str, Any]] = OrderedDict()
         self.block_emulators: Dict[BlockKey, Tuple[EmulatorExtern, Optional[EmulatorExtern]]] = OrderedDict()
         self.account_states1: Dict[BlockKey, Dict[Address, Cell]] = defaultdict(OrderedDict)
+        # Default initial account state per block (for lazy seeding)
+        self.default_initial_state: Dict[BlockKey, Cell] = {}
         # Per-transaction BEFORE states captured in main.collect_raw emulation
         self.before_states: Dict[TxHashHex, Cell] = OrderedDict()
 
@@ -73,8 +76,21 @@ class TraceOrderedRunner:
         if isinstance(toncenter_tx_map, dict) and 'tx_hash' in toncenter_tx_map:
             self.original_trace_root = self._transform_original_trace(toncenter_tx_map)
 
-        # Build raw indices for quick access
-        self._index_raw_chunks(raw_chunks)
+        # Build raw indices for quick access (from preindexed or raw chunks)
+        if preindexed is not None:
+            try:
+                self.tx_index = OrderedDict(preindexed.get('tx_index') or {})
+                self.blocks = OrderedDict(preindexed.get('blocks') or {})
+                # Do not pass emulators
+                self.account_states1 = defaultdict(OrderedDict)
+                # Default initial state per block (for lazy seeding)
+                self.default_initial_state = dict(preindexed.get('default_initial_state') or {})
+                self.before_states = OrderedDict(preindexed.get('before_states') or {})
+            except Exception as e:
+                logger.error(f"Failed to apply preindexed data; falling back to raw indexing: {e}")
+                self._index_raw_chunks(raw_chunks or [])
+        else:
+            self._index_raw_chunks(raw_chunks or [])
 
         # Optional LiteClient for on-demand account state fetch
         self.lc: Optional[LiteClient] = None
@@ -228,6 +244,9 @@ class TraceOrderedRunner:
             blk = block['block_id']
             block_key: BlockKey = (blk.id.workchain, blk.id.shard, blk.id.seqno, blk.root_hash)
             self.blocks[block_key] = block
+            # Record default initial state per block (for lazy seeding)
+            if block_key not in self.default_initial_state:
+                self.default_initial_state[block_key] = initial_account_state
             for tx in txs:
                 tx_tlb = Transaction().cell_unpack(tx['tx'], True)
                 account_address = int(tx_tlb.account_addr, 2)
@@ -300,7 +319,7 @@ class TraceOrderedRunner:
         dest_addr: Address = msg['dest']
         self._ensure_account_state(block_key, dest_addr)
         em, _ = self._get_emulators(block_key)
-        state1 = self.account_states1[block_key][dest_addr]
+        state1 = self.account_states1[block_key].get(dest_addr) or self.default_initial_state.get(block_key)
         try:
             ok = em.emulate_transaction(state1, msg['cell'], now, lt)
             if ok:
@@ -425,8 +444,9 @@ class TraceOrderedRunner:
                             gc_account_int = int(gc_tlb.account_addr, 2)
                             gc_account_addr = Address(f"{gc_block_key[0]}:{hex(gc_account_int).upper()[2:].zfill(64)}")
                             emu, _ = self._get_emulators(gc_block_key)
-                            gc_state = self.global_overrides.get(gc_account_addr) or self.account_states1[gc_block_key][
-                                gc_account_addr]
+                            gc_state = (self.global_overrides.get(gc_account_addr)
+                                       or self.account_states1[gc_block_key].get(gc_account_addr)
+                                       or self.default_initial_state.get(gc_block_key))
                             self.account_states1[gc_block_key][gc_account_addr] = gc_state
                             # Emulate with override message
                             tmp_out3, new_state_gc, _ns, gc_out_msgs = emulate_tx_step_with_in_msg(
@@ -520,7 +540,8 @@ class TraceOrderedRunner:
         # Priority metter!!!
         state1 = (self.global_overrides.get(account_addr)  # if any other tx come to this account_addr in past
                   or self.before_states.get(transaction_hash)
-                  or self.account_states1[block_key][account_addr])
+                  or self.account_states1[block_key].get(account_addr)
+                  or self.default_initial_state.get(block_key))
         # Sync the stored account state to the chosen BEFORE state
         self.account_states1[block_key][account_addr] = state1
 
@@ -646,8 +667,9 @@ class TraceOrderedRunner:
                             child_account_addr = Address(
                                 f"{child_block_key[0]}:{hex(child_account_int).upper()[2:].zfill(64)}")
                             em_child, _ = self._get_emulators(child_block_key)
-                            child_state = self.global_overrides.get(child_account_addr) or \
-                                          self.account_states1[child_block_key][child_account_addr]
+                            child_state = (self.global_overrides.get(child_account_addr)
+                                           or self.account_states1[child_block_key].get(child_account_addr)
+                                           or self.default_initial_state.get(child_block_key))
                             self.account_states1[child_block_key][child_account_addr] = child_state
                             # Run override emulation with child's timing
                             tmp_out2, new_state_child, _ns2, child_out_msgs = emulate_tx_step_with_in_msg(

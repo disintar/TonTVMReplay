@@ -216,26 +216,43 @@ def process_result(outq):
     return tmp_s, tmp_u, tmp_w
 
 
+# Globals for worker fast startup
+_W_PREINDEX = None
+_W_LCPARAMS = None
+_W_LOGLEVEL = None
+_W_COLOR_SCHEMA = None
+_W_C7_ENV = None
+
+def _worker_init(preindexed, lcparams, loglevel, color_schema, c7_env):
+    global _W_PREINDEX, _W_LCPARAMS, _W_LOGLEVEL, _W_COLOR_SCHEMA, _W_C7_ENV
+    _W_PREINDEX = preindexed
+    _W_LCPARAMS = lcparams
+    _W_LOGLEVEL = loglevel
+    _W_COLOR_SCHEMA = color_schema
+    _W_C7_ENV = c7_env
+
+
 def _process_one_trace_worker(args):
     """
     Multiprocessing worker to emulate a single trace with TraceOrderedRunner.
-    args: (tidx, trace_obj, raw_chunks_all, lcparams, loglevel, color_schema, c7_env_str)
+    args: (tidx, trace_obj)
     Returns: list of failed_traces entries (may be empty).
     """
     try:
-        tidx, t, raw_chunks_all, lcparams, loglevel, color_schema, c7_env = args
-        config_override = json.loads(c7_env) if c7_env else None
+        tidx, t = args
+        config_override = json.loads(_W_C7_ENV) if _W_C7_ENV else None
         tx_order = t.get("transactions_order", [])
         tx_order_list = [b64_to_hex(h).upper() for h in tx_order]
         runner_local = TraceOrderedRunner(
-            raw_chunks=raw_chunks_all,
+            raw_chunks=None,
             config_override=config_override,
-            loglevel=loglevel,
-            color_schema=color_schema,
+            loglevel=_W_LOGLEVEL,
+            color_schema=_W_COLOR_SCHEMA,
             tx_order_hex_upper=tx_order_list or [],
             toncenter_tx_map=t.get("trace"),
             toncenter_tx_details=t.get("transactions", {}),
-            lcparams=lcparams
+            lcparams=_W_LCPARAMS,
+            preindexed=_W_PREINDEX
         )
         runner_local.run(tx_order_list or [])
         return runner_local.failed_traces or []
@@ -433,21 +450,46 @@ def main():
             except QueueEmpty:
                 break
 
-        # Now run TraceOrderedRunner for each trace using the same raw_chunks_all (multiprocessing with spawn + tqdm)
+        # Build pre-index once to speed up per-trace workers
+        def _build_preindex(raw_chunks):
+            blocks = {}
+            tx_index = {}
+            before_states = {}
+            default_initial_state = {}
+            for block, initial_account_state, txs in raw_chunks:
+                blk = block['block_id']
+                block_key = (blk.id.workchain, blk.id.shard, blk.id.seqno, blk.root_hash)
+                blocks[block_key] = block
+                if block_key not in default_initial_state:
+                    default_initial_state[block_key] = initial_account_state
+                for tx in txs:
+                    try:
+                        txh = tx['tx'].get_hash().upper()
+                        tx_index[txh] = (block_key, tx)
+                        if 'before_state_em1' in tx and tx['before_state_em1'] is not None:
+                            before_states[txh] = tx['before_state_em1']
+                    except Exception:
+                        pass
+            return {
+                'blocks': blocks,
+                'tx_index': tx_index,
+                'before_states': before_states,
+                'default_initial_state': default_initial_state,
+            }
+
+        preindex = _build_preindex(raw_chunks_all)
+
+        # Now run TraceOrderedRunner for each trace using the same indexes (multiprocessing with spawn + tqdm)
         max_workers = int(os.getenv("NPROC", 10))
         aggregated_failed: list = []
         pbar2 = tqdm(total=len(all_traces), desc="Emulating traces", unit="trace", disable=False)
         try:
             ctx = get_context("spawn")
             c7_env = os.getenv("C7_REWRITE")
-            args_list = [
-                (idx, trace, raw_chunks_all, lcparams, LOGLEVEL, COLOR_SCHEMA, c7_env)
-                for idx, trace in enumerate(all_traces)
-            ]
-            with ctx.Pool(processes=max_workers) as pool:
-                for res in pool.imap_unordered(
-                        _process_one_trace_worker,
-                        args_list):
+            args_iter = list(enumerate(all_traces))
+            with ctx.Pool(processes=max_workers, initializer=_worker_init,
+                          initargs=(preindex, lcparams, LOGLEVEL, COLOR_SCHEMA, c7_env)) as pool:
+                for res in pool.imap_unordered(_process_one_trace_worker, args_iter):
                     if res:
                         aggregated_failed.extend(res)
                     pbar2.update(1)
