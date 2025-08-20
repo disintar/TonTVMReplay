@@ -825,11 +825,53 @@ class TraceOrderedRunner:
         present_hashes = self._collect_in_hashes(self.emulated_trace_root)
         not_presented = self._collect_not_presented(self.original_trace_root, present_hashes)
         # Record original and emulated trace (no diff) into failed_traces.json
-        self.failed_traces.append({
+        # Compute final status breakdown
+        def _count_modes(node):
+            from collections import Counter
+            cnt = Counter()
+            def dfs(n):
+                if not isinstance(n, dict):
+                    return
+                mode = n.get('mode')
+                if mode == 'success':
+                    cnt['success'] += 1
+                elif mode == 'warning':
+                    cnt['warnings'] += 1
+                elif mode == 'error':
+                    cnt['unsuccess'] += 1
+                elif mode == 'new_transaction':
+                    cnt['new'] += 1
+                elif mode == 'missed_transaction':
+                    cnt['missed'] += 1
+                for ch in (n.get('children') or []):
+                    dfs(ch)
+            dfs(node)
+            return cnt
+        counts = _count_modes(self.emulated_trace_root or {})
+        # missed also includes original children not presented at all
+        missed_total = counts.get('missed', 0) + len(not_presented)
+        final_success = (
+            (self.emulated_trace_root is not None)
+            and counts.get('warnings', 0) == 0
+            and counts.get('unsuccess', 0) == 0
+            and counts.get('new', 0) == 0
+            and missed_total == 0
+        )
+        entry = {
             'type': 'trace_tree_comparison',
             'root_tx': hex_to_b64(root_transaction_hash),
             'original_trace': self.original_trace_root,
             'emulated_trace': self.emulated_trace_root,
             'not_presented': not_presented,
-        })
+            'final_status': 'success' if final_success else 'error'
+        }
+        if not final_success:
+            entry['final_status_detailed'] = {
+                'success': counts.get('success', 0),
+                'unsuccess': counts.get('unsuccess', 0),
+                'warnings': counts.get('warnings', 0),
+                'new': counts.get('new', 0),
+                'missed': missed_total
+            }
+        self.failed_traces.append(entry)
         return out
