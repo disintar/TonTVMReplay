@@ -75,7 +75,7 @@ def collect_raw(data):
             tx['after_state_em2'] = account_state_em2
             try:
                 tx['unchanged_emulator_tx_hash'] = em2.transaction.get_hash() if (
-                            em2 is not None and em2.transaction is not None) else None
+                        em2 is not None and em2.transaction is not None) else None
             except Exception:
                 tx['unchanged_emulator_tx_hash'] = None
         except Exception as e:
@@ -116,9 +116,11 @@ def process_blocks(data, config_override: dict = None, trace_whitelist: set = No
     # Primary emulator (possibly with C7 rewrite)
     em = EmulatorExtern(os.getenv("EMULATOR_PATH"), config)
     em.set_rand_seed(block['rand_seed'])
-    prev_block_data = [list(reversed(block['prev_block_data'][0])),
-                       list(reversed(block['prev_block_data'][1])),
-                       block['prev_block_data'][2]]
+
+    prev_block_data = [list(reversed(block['prev_block_data'][1])),  # prev 16
+                       block['prev_block_data'][2],  # key block
+                       list(reversed(block['prev_block_data'][0]))]  # prev 16 by 100
+
     em.set_prev_blocks_info(prev_block_data)
     em.set_libs(VmDict(256, False, cell_root=Cell(block['libs'])))
 
@@ -445,8 +447,7 @@ def main():
             with ctx.Pool(processes=max_workers) as pool:
                 for res in pool.imap_unordered(
                         _process_one_trace_worker,
-                        args_list,
-                        chunksize=10):
+                        args_list):
                     if res:
                         aggregated_failed.extend(res)
                     pbar2.update(1)
@@ -488,6 +489,7 @@ def main():
                 def _count_modes_tree(node):
                     from collections import Counter
                     cnt = Counter()
+
                     def dfs(n):
                         if not isinstance(n, dict):
                             return
@@ -504,6 +506,7 @@ def main():
                             cnt['missed'] += 1
                         for ch in (n.get('children') or []):
                             dfs(ch)
+
                     dfs(node)
                     return cnt
 
@@ -520,7 +523,9 @@ def main():
                     total_missed += len(not_presented)
 
                     # Per-trace success means: all nodes are 'success' (no warnings/errors/new/missed) and no not_presented
-                    if emu and c.get('warnings', 0) == 0 and c.get('unsuccess', 0) == 0 and c.get('new', 0) == 0 and c.get('missed', 0) == 0 and len(not_presented) == 0:
+                    if emu and c.get('warnings', 0) == 0 and c.get('unsuccess', 0) == 0 and c.get('new',
+                                                                                                  0) == 0 and c.get(
+                            'missed', 0) == 0 and len(not_presented) == 0:
                         trace_success_count += 1
                     else:
                         trace_unsuccess_count += 1
