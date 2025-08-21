@@ -3,19 +3,21 @@ from typing import Optional
 
 from tonpy.blockscanner.blockscanner import *
 from tonpy import begin_cell
-from collections import Counter
+from collections import Counter, OrderedDict, defaultdict
 import json
 import os
 import argparse
 import base64
 import requests
 from multiprocessing import get_context
+
+from tonpy.utils.shard_account import get_empty_shard_account
 from tqdm import tqdm
 from tonemuso.diff import get_diff, get_colored_diff, make_json_dumpable, get_shard_account_diff
 from queue import Empty as QueueEmpty
 from tonemuso.trace_runner import TraceOrderedRunner
 from tonemuso.utils import b64_to_hex, hex_to_b64
-from tonpy.autogen.block import Block, BlockInfo
+from tonpy.autogen.block import Block, BlockInfo, ShardAccount
 
 LOGLEVEL = int(os.getenv("EMUSO_LOGLEVEL", 1))
 COLOR_SCHEMA = str(os.getenv("COLOR_SCHEMA_PATH", ''))
@@ -463,17 +465,22 @@ def main():
             blocks = {}
             tx_index = {}
             before_states = {}
-            default_initial_state = {}
+            # Per-block, per-account default initial states
+            default_initial_state = defaultdict(OrderedDict)
             for block, initial_account_state, txs in raw_chunks:
                 blk = block['block_id']
                 block_key = (blk.id.workchain, blk.id.shard, blk.id.seqno, blk.root_hash)
                 blocks[block_key] = block
-                if block_key not in default_initial_state:
-                    default_initial_state[block_key] = initial_account_state
                 for tx in txs:
                     try:
                         txh = tx['tx'].get_hash().upper()
                         tx_index[txh] = (block_key, tx)
+                        # compute account address for this tx and assign default state
+                        tx_tlb = Transaction().cell_unpack(tx['tx'], True)
+                        account_address = int(tx_tlb.account_addr, 2)
+                        account_addr = Address(f"{block_key[0]}:{hex(account_address).upper()[2:].zfill(64)}")
+                        if account_addr not in default_initial_state[block_key]:
+                            default_initial_state[block_key][account_addr] = initial_account_state
                         if 'before_state_em1' in tx and tx['before_state_em1'] is not None:
                             before_states[txh] = tx['before_state_em1']
                     except Exception:
@@ -534,6 +541,7 @@ def main():
                 total_new = 0
                 total_missed = 0
                 trace_success_count = 0
+                trace_warning_count = 0
                 trace_unsuccess_count = 0
 
                 def _count_modes_tree(node):
@@ -572,16 +580,17 @@ def main():
                     not_presented = entry.get('not_presented') or []
                     total_missed += len(not_presented)
 
-                    # Per-trace success means: all nodes are 'success' (no warnings/errors/new/missed) and no not_presented
-                    if emu and c.get('warnings', 0) == 0 and c.get('unsuccess', 0) == 0 and c.get('new',
-                                                                                                  0) == 0 and c.get(
-                        'missed', 0) == 0 and len(not_presented) == 0:
+                    # Per-trace status from entry.final_status
+                    fstatus = (entry.get('final_status') or '').lower()
+                    if fstatus == 'success':
                         trace_success_count += 1
+                    elif fstatus == 'warning' or fstatus == 'warnings':
+                        trace_warning_count += 1
                     else:
                         trace_unsuccess_count += 1
 
                 logger.warning(
-                    f"Final emulator status: {total_success} success, {total_unsuccess} unsuccess, {total_warnings} warnings, {total_new} new, {total_missed} missed; traces: {trace_success_count} success, {trace_unsuccess_count} unsuccess")
+                    f"Final emulator status: {total_success} success, {total_unsuccess} unsuccess, {total_warnings} warnings, {total_new} new, {total_missed} missed; traces: {trace_success_count} success, {trace_warning_count} warnings, {trace_unsuccess_count} unsuccess")
             except Exception as e:
                 logger.error(f"Failed to compute final status from traces emulation: {e}")
 
@@ -786,8 +795,13 @@ def main():
                 # Add also transactions from original trace that are not presented in emulated tree
                 not_presented = trace_entries[0].get('not_presented') or []
                 missed_cnt += len(not_presented)
+                # Per-trace status summary (only one trace here)
+                status = (trace_entries[0].get('final_status') or '').lower()
+                t_succ = 1 if status == 'success' else 0
+                t_warn = 1 if status == 'warning' or status == 'warnings' else 0
+                t_uns = 1 if status not in ('success', 'warning', 'warnings') else 0
                 logger.warning(
-                    f"Final emulator status: {success} success, {unsuccess} unsuccess, {warnings} warnings, {new_cnt} new, {missed_cnt} missed")
+                    f"Final emulator status: {success} success, {unsuccess} unsuccess, {warnings} warnings, {new_cnt} new, {missed_cnt} missed; traces: {t_succ} success, {t_warn} warnings, {t_uns} unsuccess")
                 # Skip the default final log below by returning early
                 return
         except Exception as e:

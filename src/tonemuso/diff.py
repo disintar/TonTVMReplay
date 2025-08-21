@@ -1,4 +1,3 @@
-
 from deepdiff import DeepDiff
 from tonpy.autogen.block import Transaction, ShardAccount
 from loguru import logger
@@ -80,10 +79,13 @@ def get_colored_diff(diff, color_schema, root='transaction'):
     for path in diff.affected_paths:
         path = unpack_path(path)
 
+        if root not in color_schema:
+            raise ValueError(f"{root} is not in color schema")
+
         current_root = color_schema[root]
         for p in path:
             if p not in current_root:
-                logger.warning(f"[COLOR_SCHEMA] {p} is not in list, full path: {path}, but affected")
+                logger.warning(f"[COLOR_SCHEMA: {root}] {p} is not in list, full path: {path}, but affected")
                 max_level = 'alarm'
                 log['colors']['__'.join(path)] = 'alarm'
                 break
