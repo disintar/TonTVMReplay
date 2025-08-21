@@ -195,14 +195,22 @@ def emulate_tx_step(block: Dict[str, Any],
 
         # Always include secondary emulator info if available
         account_diff_dict = None
+        account_color_level = None
+        account_color_log = None
         unchanged_emulator_tx_hash = None
+        sa_diff = None
         try:
             if em2 is not None:
                 unchanged_emulator_tx_hash = em2.transaction.get_hash() if em2.transaction is not None else None
                 sa_diff = get_shard_account_diff(em.account.to_cell(), em2.account.to_cell())
                 account_diff_dict = {'data': make_json_dumpable(sa_diff.to_dict()),
-                                     'account_emulator_tx_hash_match': unchanged_emulator_tx_hash == tx[
-                                         'tx'].get_hash()}
+                                     'account_emulator_tx_hash_match': unchanged_emulator_tx_hash == tx['tx'].get_hash()}
+                # If color schema contains account root, evaluate colored diff for account as well
+                if color_schema is not None and isinstance(color_schema, dict):
+                    try:
+                        account_color_level, account_color_log = get_colored_diff(sa_diff, color_schema, root='account')
+                    except Exception:
+                        account_color_level, account_color_log = None, None
         except Exception as ee:
             logger.error(f"UNCHANGED EMULATOR ERROR: {ee}")
 
@@ -237,6 +245,9 @@ def emulate_tx_step(block: Dict[str, Any],
                            'fail_reason': "color_schema_alarm"}
                 if account_diff_dict is not None:
                     err_obj['account_diff'] = account_diff_dict
+                if account_color_log is not None:
+                    err_obj['account_color_schema_log'] = account_color_log
+                    err_obj['account_color_level'] = account_color_level
                 if unchanged_emulator_tx_hash is not None:
                     err_obj['unchanged_emulator_tx_hash'] = unchanged_emulator_tx_hash
                 out.append(err_obj)
@@ -247,9 +258,63 @@ def emulate_tx_step(block: Dict[str, Any],
                 warn_obj = {'mode': 'warning'}
                 if account_diff_dict is not None:
                     warn_obj['account_diff'] = account_diff_dict
+                if account_color_log is not None:
+                    warn_obj['account_color_schema_log'] = account_color_log
+                    warn_obj['account_color_level'] = account_color_level
                 if unchanged_emulator_tx_hash is not None:
                     warn_obj['unchanged_emulator_tx_hash'] = unchanged_emulator_tx_hash
                 out.append(warn_obj)
+
+    # If transaction comparison produced no issues, still perform colored check for account diff (if em2 present)
+    if color_schema is not None and em2 is not None:
+        try:
+            # Compute account diff between after-states of em1 and em2
+            sa_diff2 = get_shard_account_diff(em.account.to_cell(), em2.account.to_cell())
+            if isinstance(color_schema, dict):
+                root_key2 = 'account' if 'account' in color_schema else ('transaction' if 'transaction' in color_schema else None)
+                if root_key2 is not None:
+                    try:
+                        acc_level2, acc_log2 = get_colored_diff(sa_diff2, color_schema, root=root_key2)
+                    except Exception:
+                        acc_level2, acc_log2 = None, None
+                if acc_level2 == 'alarm' and go_as_success:
+                    go_as_success = False
+                    # Build error object similar to tx colored alarm
+                    err_obj = {
+                        'mode': 'error',
+                        'fail_reason': 'account_color_schema_alarm',
+                        'expected': tx['tx'].get_hash(),
+                        'got': em.transaction.get_hash() if em.transaction is not None else None,
+                        'account_diff': {
+                            'data': make_json_dumpable(sa_diff2.to_dict()),
+                            'account_emulator_tx_hash_match': (em2.transaction.get_hash() if em2.transaction is not None else None) == tx['tx'].get_hash()
+                        },
+                        'account_color_schema_log': acc_log2,
+                        'account_color_level': acc_level2
+                    }
+                    try:
+                        err_obj['unchanged_emulator_tx_hash'] = em2.transaction.get_hash() if em2.transaction is not None else None
+                    except Exception:
+                        pass
+                    out.append(err_obj)
+                elif acc_level2 == 'warn' and go_as_success:
+                    go_as_success = False
+                    warn_obj = {
+                        'mode': 'warning',
+                        'account_diff': {
+                            'data': make_json_dumpable(sa_diff2.to_dict()),
+                            'account_emulator_tx_hash_match': (em2.transaction.get_hash() if em2.transaction is not None else None) == tx['tx'].get_hash()
+                        },
+                        'account_color_schema_log': acc_log2,
+                        'account_color_level': acc_level2
+                    }
+                    try:
+                        warn_obj['unchanged_emulator_tx_hash'] = em2.transaction.get_hash() if em2.transaction is not None else None
+                    except Exception:
+                        pass
+                    out.append(warn_obj)
+        except Exception as e:
+            logger.error(f"ACCOUNT COLORED CHECK ERROR: {e}")
 
     # Update account states for next transaction
     try:

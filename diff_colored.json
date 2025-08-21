@@ -13,7 +13,13 @@
       "out_msgs": "alarm"
     },
     "total_fees": {
-      "grams": "alarm",
+      "grams": {
+        "amount": {
+          "value": {
+            "warn_if": "abs_diff == -1 else skip"
+          }
+        }
+      },
       "other": "alarm"
     },
     "state_update": "alarm",
@@ -65,5 +71,11 @@
       "aborted": "alarm",
       "destroyed": "alarm"
     }
+  },
+  "account": {},
+  "trace": {
+    "allow_extra_tx": [
+      {"op":  "0x1", "with_bounced":  true}
+    ]
   }
 }
