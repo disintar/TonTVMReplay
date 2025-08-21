@@ -72,5 +72,10 @@
       "destroyed": "alarm"
     }
   },
-  "account": {}
+  "account": {},
+  "trace": {
+    "allow_extra_tx": [
+      {"op":  "0x1", "with_bounced":  true}
+    ]
+  }
 }

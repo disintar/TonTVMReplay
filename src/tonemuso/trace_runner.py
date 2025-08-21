@@ -900,20 +900,130 @@ class TraceOrderedRunner:
         counts = _count_modes(self.emulated_trace_root or {})
         # missed also includes original children not presented at all
         missed_total = counts.get('missed', 0) + len(not_presented)
+
+        # Helper: normalize opcode to int if possible
+        def _norm_op(v) -> Optional[int]:
+            try:
+                if v is None:
+                    return None
+                if isinstance(v, int):
+                    return v
+                if isinstance(v, str):
+                    s = v.strip().lower()
+                    if s.startswith('0x'):
+                        return int(s, 16)
+                    return int(s)
+            except Exception:
+                return None
+            return None
+
+        # Check if extra new tx is allowed by color schema (diff_colored.json)
+        # Return number of allowed "new_transaction" nodes (0 if not allowed)
+        def _allowed_extra_new_count(root_node) -> int:
+            try:
+                schema = self.color_schema if isinstance(self.color_schema, dict) else {}
+                trace_cfg = schema.get('trace') or {}
+                allow = trace_cfg.get('allow_extra_tx') or []
+                if not isinstance(allow, list) or not allow:
+                    return 0
+                # Build allow sets
+                allow_plain: Set[int] = set()
+                allow_bounced: Set[int] = set()
+                for it in allow:
+                    if not isinstance(it, dict):
+                        continue
+                    op_raw = it.get('op')
+                    opn = _norm_op(op_raw)
+                    if opn is None:
+                        continue
+                    allow_plain.add(opn)
+                    if bool(it.get('with_bounced')):
+                        allow_bounced.add(opn)
+
+                # Respect global constraints: warnings/unsuccess/missed must still fail
+                if counts.get('unsuccess', 0) != 0 or counts.get('warnings', 0) != 0:
+                    return 0
+                if missed_total != 0:
+                    return 0
+
+                # Collect all new nodes
+                new_nodes: List[Dict[str, Any]] = []
+                def dfs_collect(n):
+                    if not isinstance(n, dict):
+                        return
+                    if n.get('mode') == 'new_transaction':
+                        new_nodes.append(n)
+                    for ch in (n.get('children') or []):
+                        dfs_collect(ch)
+                dfs_collect(root_node)
+
+                if not new_nodes:
+                    return 0
+                # Only allow scenarios originating from a single extra root node (and at most one bounced child)
+                if len(new_nodes) > 2:
+                    return 0
+
+                # Identify the top-most new node (one whose parent is not new). Build parent map first.
+                parent_of: Dict[int, Optional[int]] = {}
+                flat: List[Dict[str, Any]] = []
+                def dfs_parent(n, parent_idx=None):
+                    if not isinstance(n, dict):
+                        return
+                    idx = len(flat)
+                    flat.append(n)
+                    parent_of[idx] = parent_idx
+                    for ch in (n.get('children') or []):
+                        dfs_parent(ch, idx)
+                dfs_parent(root_node)
+                new_indices = [i for i, node in enumerate(flat) if node.get('mode') == 'new_transaction']
+                if not new_indices:
+                    return 0
+                # Pick roots among new nodes
+                new_roots = [i for i in new_indices if parent_of.get(i) is None or flat[parent_of[i]].get('mode') != 'new_transaction']
+                if len(new_roots) != 1:
+                    return 0
+                root_new_idx = new_roots[0]
+                root_new = flat[root_new_idx]
+                op_int = _norm_op(root_new.get('opcode'))
+                if op_int is None or op_int not in allow_plain:
+                    return 0
+                children = root_new.get('children') or []
+                # Case A: no children
+                if len(children) == 0:
+                    # Ensure there are no other new nodes
+                    return 1 if len(new_nodes) == 1 else 0
+                # Case B: exactly one bounced child allowed if configured
+                if len(children) == 1 and op_int in allow_bounced:
+                    ch = children[0]
+                    if isinstance(ch, dict) and ch.get('mode') == 'new_transaction' and bool(ch.get('bounced')) is True:
+                        # Child must have no further children
+                        if len(ch.get('children') or []) == 0 and len(new_nodes) == 2:
+                            return 2
+                return 0
+            except Exception:
+                return 0
+
+        allowed_extra_applied = False
+        allowed_extra_new = 0
+        if self.emulated_trace_root is not None:
+            allowed_extra_new = _allowed_extra_new_count(self.emulated_trace_root)
+            allowed_extra_applied = allowed_extra_new > 0
+
         final_success = (
             (self.emulated_trace_root is not None)
             and counts.get('warnings', 0) == 0
             and counts.get('unsuccess', 0) == 0
-            and counts.get('new', 0) == 0
+            and (counts.get('new', 0) - allowed_extra_new) == 0
             and missed_total == 0
         )
+
         # Decide final status: success, warning (only warnings), or error (unsuccess/new/missed present)
         if final_success:
             final_status = 'success'
         else:
             only_warnings = (
                 counts.get('unsuccess', 0) == 0 and
-                counts.get('new', 0) == 0 and
+                (counts.get('new', 0) - allowed_extra_new) == 0 and
                 missed_total == 0 and
                 counts.get('warnings', 0) > 0
             )
@@ -927,6 +1037,8 @@ class TraceOrderedRunner:
             'not_presented': not_presented,
             'final_status': final_status
         }
+        if allowed_extra_applied:
+            entry['allowed_extra_applied'] = True
         if final_status != 'success':
             entry['final_status_detailed'] = {
                 'success': counts.get('success', 0),
