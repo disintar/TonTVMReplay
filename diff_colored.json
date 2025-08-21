@@ -13,7 +13,13 @@
       "out_msgs": "alarm"
     },
     "total_fees": {
-      "grams": "alarm",
+      "grams": {
+        "amount": {
+          "value": {
+            "warn_if": "abs_diff == -1 else skip"
+          }
+        }
+      },
       "other": "alarm"
     },
     "state_update": "alarm",

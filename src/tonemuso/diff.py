@@ -2,7 +2,7 @@ from deepdiff import DeepDiff
 from tonpy.autogen.block import Transaction, ShardAccount
 from loguru import logger
 import json
-
+import re
 
 def make_json_dumpable(obj):
     """
@@ -72,40 +72,129 @@ def unpack_path(path):
 
 def get_colored_diff(diff, color_schema, root='transaction'):
     max_level = 'skip'
+    # Prepare quick lookup for numeric value changes by affected path string
+    diff_dict = diff.to_dict() if hasattr(diff, 'to_dict') else {}
+    values_changed = diff_dict.get('values_changed', {}) if isinstance(diff_dict, dict) else {}
+
     log = {
         'affected_paths': list(diff.affected_paths),
         'colors': {}
     }
-    for path in diff.affected_paths:
-        path = unpack_path(path)
+    for affected_path_str in diff.affected_paths:
+        path_list = unpack_path(affected_path_str)
 
         if root not in color_schema:
             raise ValueError(f"{root} is not in color schema")
 
         current_root = color_schema[root]
-        for p in path:
+        traversed_ok = True
+        for i, p in enumerate(path_list):
             if p not in current_root:
-                logger.warning(f"[COLOR_SCHEMA: {root}] {p} is not in list, full path: {path}, but affected")
+                logger.warning(f"[COLOR_SCHEMA: {root}] {p} is not in list, full path: {path_list}, but affected")
                 max_level = 'alarm'
-                log['colors']['__'.join(path)] = 'alarm'
+                log['colors']['__'.join(path_list)] = 'alarm'
+                traversed_ok = False
+                break
+            node = current_root[p]
+            # Leaf processing
+            if isinstance(node, str):
+                level = node
+                if level == 'warn':
+                    if max_level != 'alarm':
+                        max_level = 'warn'
+                    log['colors']['__'.join(path_list)] = 'warn'
+                elif level == 'alarm':
+                    max_level = 'alarm'
+                    log['colors']['__'.join(path_list)] = 'alarm'
+                elif level == 'skip':
+                    log['colors']['__'.join(path_list)] = 'skip'
+                else:
+                    logger.warning(f"[COLOR_SCHEMA] {p} has invalid color level")
+                break
+            elif isinstance(node, dict) and ('warn_if' in node):
+                # Evaluate warn_if rule only for numeric value changes
+                change = values_changed.get(affected_path_str)
+                try:
+                    old_v = change.get('old_value') if isinstance(change, dict) else None
+                    new_v = change.get('new_value') if isinstance(change, dict) else None
+                except Exception:
+                    old_v, new_v = None, None
+                applied = False
+                diff_v = None
+                # Precompute diff if both are ints
+                if isinstance(old_v, int) and isinstance(new_v, int):
+                    diff_v = new_v - old_v
+                else:
+                    logger.warning(f"[COLOR_SCHEMA] {p} has non-numeric value change, but warn_if rule is defined")
+                    log['colors']['__'.join(path_list)] = 'alarm'
+                    break
+
+                rule = node.get('warn_if', '')
+                # Conservative parser: supports patterns like "diff > 3 else skip", "abs_diff >= 5 else skip" or "new_value > 100 else warn"
+                m = re.match(r"\s*(diff|abs_diff|new_value)\s*(==|!=|>=|<=|>|<)\s*(-?\d+)\s*else\s*(skip|warn|alarm)\s*$", str(rule))
+                if m:
+                    lhs, op, num_s, else_action = m.groups()
+                    num = int(num_s)
+                    # Determine comparable value based on lhs
+                    can_compare = False
+                    val = None
+                    if lhs == 'diff' and isinstance(old_v, int) and isinstance(new_v, int):
+                        val = diff_v
+                        can_compare = True
+                    elif lhs == 'abs_diff' and isinstance(old_v, int) and isinstance(new_v, int):
+                        val = abs(diff_v)
+                        can_compare = True
+                    elif lhs == 'new_value' and isinstance(new_v, int):
+                        val = new_v
+                        can_compare = True
+                    if can_compare:
+                        cond = False
+                        if op == '==':
+                            cond = (val == num)
+                        elif op == '!=':
+                            cond = (val != num)
+                        elif op == '>':
+                            cond = (val > num)
+                        elif op == '<':
+                            cond = (val < num)
+                        elif op == '>=':
+                            cond = (val >= num)
+                        elif op == '<=':
+                            cond = (val <= num)
+                        else:
+                            logger.warning(f"[COLOR_SCHEMA] {p} has invalid operator")
+                            log['colors']['__'.join(path_list)] = 'alarm'
+                            break
+                        if cond:
+                            # warn
+                            if max_level != 'alarm':
+                                max_level = 'warn'
+                            log['colors']['__'.join(path_list)] = 'warn'
+                        else:
+                            # else action
+                            if else_action == 'alarm':
+                                max_level = 'alarm'
+                                log['colors']['__'.join(path_list)] = 'alarm'
+                            elif else_action == 'warn':
+                                if max_level != 'alarm':
+                                    max_level = 'warn'
+                                log['colors']['__'.join(path_list)] = 'warn'
+                            elif else_action == 'skip':
+                                log['colors']['__'.join(path_list)] = 'skip'
+                            else:
+                                logger.warning(f"[COLOR_SCHEMA] {p} has invalid else action")
+                                log['colors']['__'.join(path_list)] = 'alarm'
+                                break
+                        applied = True
+                if not applied:
+                    logger.warning(f"[COLOR_SCHEMA] {p} rule is not applied, but affected")
+                    log['colors']['__'.join(path_list)] = 'alarm'
+                    break
                 break
             else:
-                if isinstance(current_root[p], str):
-                    level = current_root[p]
-                    if level == 'warn':
-                        if max_level != 'alarm':
-                            max_level = 'warn'
-                        log['colors']['__'.join(path)] = 'warn'
-                    elif level == 'alarm':
-                        max_level = 'alarm'
-                        log['colors']['__'.join(path)] = 'alarm'
-                    elif level == 'skip':
-                        pass
-                    else:
-                        logger.warning(f"[COLOR_SCHEMA] {p} has invalid color level")
-                    break
-                else:
-                    current_root = current_root[p]
+                # Traverse deeper
+                current_root = node
+        # end for path components
 
     return max_level, log
 
