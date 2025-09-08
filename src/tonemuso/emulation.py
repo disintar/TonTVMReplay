@@ -8,6 +8,7 @@ from loguru import logger
 import os
 
 from tonemuso.diff import get_diff, get_colored_diff, make_json_dumpable, get_shard_account_diff
+from tonemuso.utils import hex_to_b64
 
 
 def init_emulators(block: Dict[str, Any], config_override: Dict[str, Any] = None) -> Tuple[
@@ -75,7 +76,7 @@ def extract_message_info(tx: Cell):
                         opcode = hex(send_body.load_uint(32))
 
                 dest = message_parsed['x']['info']['dest']
-                created_lt =  message_parsed['x']['info']['created_lt']
+                created_lt = message_parsed['x']['info']['created_lt']
                 dest = Address(f"{dest['workchain_id']}:{dest['address'].zfill(64)}")
                 answer['out_msgs'].append({
                     'msg_hash': msg_hash,
@@ -100,7 +101,8 @@ def emulate_tx_step(block: Dict[str, Any],
                     account_state_em2: Optional[Cell],
                     loglevel: int,
                     color_schema: Optional[Dict[str, Any]],
-                    extract_out_msgs: bool = False) -> Tuple[List[Dict[str, Any]], Cell, Optional[Cell]]:
+                    extract_out_msgs: bool = False,
+                    force_state_check_without_emulation2=False) -> Tuple[List[Dict[str, Any]], Cell, Optional[Cell]]:
     """
     Emulate one transaction with provided emulators and current account states.
     Returns (out_entries, new_state_em1, new_state_em2)
@@ -203,6 +205,18 @@ def emulate_tx_step(block: Dict[str, Any],
                 account_diff_dict = {'data': make_json_dumpable(sa_diff.to_dict()),
                                      'account_emulator_tx_hash_match': unchanged_emulator_tx_hash == tx[
                                          'tx'].get_hash()}
+            elif force_state_check_without_emulation2:
+                sa_diff = get_shard_account_diff(em.account.to_cell(), account_state_em2)
+                account_diff_dict = {'data': make_json_dumpable(sa_diff.to_dict()),
+                                     'account_emulator_tx_hash_match': unchanged_emulator_tx_hash == tx[
+                                         'tx'].get_hash()}
+
+                if color_schema is not None and 'account' in color_schema:
+                    acc_level, acc_log = get_colored_diff(sa_diff, color_schema, root='account')
+                    account_diff_dict['acc_level'] = acc_level
+                    account_diff_dict['acc_log'] = acc_log
+
+
         except Exception as ee:
             logger.error(f"UNCHANGED EMULATOR ERROR: {ee}")
 
@@ -222,17 +236,41 @@ def emulate_tx_step(block: Dict[str, Any],
             if loglevel > 5:
                 logger.debug(f"Get color schema")
 
+            # Evaluate transaction diff against color schema
             max_level, log = get_colored_diff(diff, color_schema)
+
+            # Additionally, if we have account diff and color schema has 'account' section,
+            # evaluate account diff and promote max_level accordingly. Attach account color log.
+            if account_diff_dict is not None and 'account' in color_schema:
+                try:
+                    acc_level, acc_log = account_diff_dict['acc_level'], account_diff_dict['acc_log']
+                    # Promote level: alarm > warn > skip
+                    level_rank = {'alarm': 2, 'warn': 1, 'skip': 0}
+                    if level_rank.get(acc_level, 0) > level_rank.get(max_level, 0):
+                        max_level = acc_level
+                    log = {**log, 'account': acc_log}
+                except Exception as e:
+                    logger.error(f"ACCOUNT COLOR SCHEMA ERROR: {e}")
+
             address = f"{block['block_id'].id.workchain}:{address}"
 
             if loglevel > 5:
                 logger.debug(f"New max level: {max_level}")
 
             if max_level == 'alarm':
+                logger.error(
+                    f"[COLOR_SCHEMA] Alarm! tx: {hex_to_b64(tx['tx'].get_hash())}, address: {address}, color_schema_log: {log}")
                 go_as_success = False
                 diff_dict = diff.to_dict()
-                err_obj = {'mode': 'error', 'diff': make_json_dumpable(diff_dict), 'address': address,
-                           'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
+                err_obj = {'mode': 'error',
+                           'diff': {
+                               'transaction': make_json_dumpable(diff_dict),
+                               'account': account_diff_dict.get('data', None) if isinstance(account_diff_dict,
+                                                                                            dict) else None,
+                           },
+                           'address': address,
+                           'expected': tx['tx'].get_hash(),
+                           'got': em.transaction.get_hash(),
                            "color_schema_log": log,
                            'fail_reason': "color_schema_alarm"}
                 if account_diff_dict is not None:
@@ -243,7 +281,7 @@ def emulate_tx_step(block: Dict[str, Any],
             elif max_level == 'warn':
                 go_as_success = False
                 logger.warning(
-                    f"[COLOR_SCHEMA] Warning! tx: {tx['tx'].get_hash()}, address: {address}, color_schema_log: {log}")
+                    f"[COLOR_SCHEMA] Warning! tx: {hex_to_b64(tx['tx'].get_hash())}, address: {address}, color_schema_log: {log}")
                 warn_obj = {'mode': 'warning'}
                 if account_diff_dict is not None:
                     warn_obj['account_diff'] = account_diff_dict
@@ -276,15 +314,15 @@ def emulate_tx_step(block: Dict[str, Any],
         return out, new_state_em1, new_state_em2
 
 
-
 def emulate_tx_step_with_in_msg(block: Dict[str, Any],
-                                 tx: Dict[str, Any],
-                                 em: EmulatorExtern,
-                                 account_state_em1: Cell,
-                                 override_in_msg: Cell,
-                                 loglevel: int,
-                                 color_schema: Optional[Dict[str, Any]],
-                                 extract_out_msgs: bool = False) -> Tuple[List[Dict[str, Any]], Cell, Optional[Cell]]:
+                                tx: Dict[str, Any],
+                                em: EmulatorExtern,
+                                account_state_em1: Cell,
+                                after_state_em2: Optional[Cell],
+                                override_in_msg: Cell,
+                                loglevel: int,
+                                color_schema: Optional[Dict[str, Any]],
+                                extract_out_msgs: bool = False) -> Tuple[List[Dict[str, Any]], Cell, Optional[Cell]]:
     """
     Emulate one transaction but force the provided override_in_msg as the incoming message.
     This performs the same checks and color-schema comparison against the original tx cell.
@@ -333,19 +371,52 @@ def emulate_tx_step_with_in_msg(block: Dict[str, Any],
 
         diff, address = get_diff(tx['tx'], em.transaction.to_cell())
 
+        # Prepare account diff using provided after_state_em2 (post-state to compare against)
+        account_diff_dict = None
+        try:
+            if after_state_em2 is not None:
+                sa_diff = get_shard_account_diff(em.account.to_cell(), after_state_em2)
+                account_diff_dict = {
+                    'data': make_json_dumpable(sa_diff.to_dict()),
+                    'account_emulator_tx_hash_match': em.transaction.get_hash() == tx['tx'].get_hash()
+                }
+                if color_schema is not None and 'account' in color_schema:
+                    acc_level, acc_log = get_colored_diff(sa_diff, color_schema, root='account')
+                    account_diff_dict['acc_level'] = acc_level
+                    account_diff_dict['acc_log'] = acc_log
+        except Exception as ee:
+            logger.error(f"ACCOUNT DIFF ERROR: {ee}")
+        
         if color_schema is None:
             diff_dict = diff.to_dict()
             go_as_success = False
-            err_obj = {'mode': 'error', 'diff': make_json_dumpable(diff_dict),
+            err_obj = {'mode': 'error', 'diff': {
+                'transaction': make_json_dumpable(diff_dict),
+                'account': account_diff_dict.get('data', None) if isinstance(account_diff_dict, dict) else None,
+            },
                        'address': f"{block['block_id'].id.workchain}:{address}",
                        'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
                        'fail_reason': "hash_missmatch"}
+            if account_diff_dict is not None:
+                err_obj['account_diff'] = account_diff_dict
             out.append(err_obj)
         else:
             if loglevel > 5:
                 logger.debug(f"Get color schema")
 
             max_level, log = get_colored_diff(diff, color_schema)
+            
+            # If we have account diff and schema has 'account', evaluate and promote
+            if account_diff_dict is not None and 'account' in color_schema:
+                try:
+                    acc_level, acc_log = account_diff_dict.get('acc_level'), account_diff_dict.get('acc_log')
+                    level_rank = {'alarm': 2, 'warn': 1, 'skip': 0}
+                    if level_rank.get(acc_level, 0) > level_rank.get(max_level, 0):
+                        max_level = acc_level
+                    log = {**log, 'account': acc_log}
+                except Exception as e:
+                    logger.error(f"ACCOUNT COLOR SCHEMA ERROR: {e}")
+            
             address = f"{block['block_id'].id.workchain}:{address}"
 
             if loglevel > 5:
@@ -354,16 +425,24 @@ def emulate_tx_step_with_in_msg(block: Dict[str, Any],
             if max_level == 'alarm':
                 go_as_success = False
                 diff_dict = diff.to_dict()
-                err_obj = {'mode': 'error', 'diff': make_json_dumpable(diff_dict), 'address': address,
+                err_obj = {'mode': 'error', 'diff': {
+                    'transaction': make_json_dumpable(diff_dict),
+                    'account': account_diff_dict.get('data', None) if isinstance(account_diff_dict, dict) else None,
+                }, 'address': address,
                            'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
                            "color_schema_log": log,
                            'fail_reason': "color_schema_alarm"}
+                if account_diff_dict is not None:
+                    err_obj['account_diff'] = account_diff_dict
                 out.append(err_obj)
             elif max_level == 'warn':
                 go_as_success = False
                 logger.warning(
-                    f"[COLOR_SCHEMA] Warning! tx: {tx['tx'].get_hash()}, address: {address}, color_schema_log: {log}")
-                out.append({'mode': 'warning'})
+                    f"[COLOR_SCHEMA] Warning! tx: {hex_to_b64(tx['tx'].get_hash())}, address: {address}, color_schema_log: {log}")
+                warn_obj = {'mode': 'warning'}
+                if account_diff_dict is not None:
+                    warn_obj['account_diff'] = account_diff_dict
+                out.append(warn_obj)
 
     # Update state
     try:

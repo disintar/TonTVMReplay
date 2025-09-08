@@ -114,6 +114,7 @@ class TraceOrderedRunner:
                 summary = {'mode': m}
                 if 'diff' in e:
                     summary['diff'] = e['diff']
+                    summary['log'] = e['color_schema_log']
                 return summary
         return {'mode': 'success'}
 
@@ -314,7 +315,7 @@ class TraceOrderedRunner:
             logger.warning(f"No state available for account {str(account_addr)} in block {block_key}")
 
     def _emulate_internal_message_recursive(self, block_key: BlockKey, msg: Dict[str, Any], now: int, lt: int) -> \
-    Optional[Dict[str, Any]]:
+            Optional[Dict[str, Any]]:
         # Destination account as Address
         dest_addr: Address = msg['dest']
         self._ensure_account_state(block_key, dest_addr)
@@ -391,7 +392,8 @@ class TraceOrderedRunner:
                 child_transaction_hash = links.get(cm_b64)
                 if child_transaction_hash:
                     gc_dest = cm.get('dest').raw if cm.get('dest') is not None else None
-                    gc_node = self._process_tx(child_transaction_hash, out, visited, cm_b64, cbody_b64, cop, gc_dest, cm.get('bounce'),
+                    gc_node = self._process_tx(child_transaction_hash, out, visited, cm_b64, cbody_b64, cop, gc_dest,
+                                               cm.get('bounce'),
                                                cm.get('bounced'))
                     if gc_node is not None:
                         nodes.append(gc_node)
@@ -445,12 +447,12 @@ class TraceOrderedRunner:
                             gc_account_addr = Address(f"{gc_block_key[0]}:{hex(gc_account_int).upper()[2:].zfill(64)}")
                             emu, _ = self._get_emulators(gc_block_key)
                             gc_state = (self.global_overrides.get(gc_account_addr)
-                                       or self.account_states1[gc_block_key].get(gc_account_addr)
-                                       or self.default_initial_state.get(gc_block_key))
+                                        or self.account_states1[gc_block_key].get(gc_account_addr)
+                                        or self.default_initial_state.get(gc_block_key))
                             self.account_states1[gc_block_key][gc_account_addr] = gc_state
                             # Emulate with override message
                             tmp_out3, new_state_gc, _ns, gc_out_msgs = emulate_tx_step_with_in_msg(
-                                self.blocks[gc_block_key], gc_tx, emu, gc_state, cm['cell'], self.loglevel,
+                                self.blocks[gc_block_key], gc_tx, emu, gc_state, gc_tx.get('after_state_em2', None), cm['cell'], self.loglevel,
                                 self.color_schema, True
                             )
                             out.extend(tmp_out3)
@@ -468,11 +470,13 @@ class TraceOrderedRunner:
                                 'destination': emitted_dest_raw,
                                 'mode': mode.get('mode'),
                                 **({'diff': mode['diff']} if 'diff' in mode else {}),
+                                **({'color_schema_log': mode['log']} if 'log' in mode else {}),
                                 'children': []
                             }
                             # Recurse for grandchildren using this same logic
                             gc_children = self._process_emitted_children_with_override(
-                                gc_block_key, child_transaction_hash, gc_tx, gc_out_msgs.get('out_msgs', []), out, visited
+                                gc_block_key, child_transaction_hash, gc_tx, gc_out_msgs.get('out_msgs', []), out,
+                                visited
                             )
                             gc_node['children'].extend(gc_children)
                             nodes.append(gc_node)
@@ -551,33 +555,15 @@ class TraceOrderedRunner:
             em,
             None,
             state1,
-            None,
+            tx.get('after_state_em2', None),
             self.loglevel,
             self.color_schema,
+            True,
             True
         )
 
         out.extend(tmp_out)
         self.account_states1[block_key][account_addr] = new_state1
-
-        # Compute account state diff vs AFTER state from second emulator (if available from collect_raw)
-        account_diff_obj = None
-        try:
-            after_state_em2 = tx.get('after_state_em2')
-            if after_state_em2 is not None and new_state1 is not None:
-                sa_diff = get_shard_account_diff(new_state1, after_state_em2)
-                # Also compute whether unchanged emulator produced the same tx hash (if collected)
-                try:
-                    unchanged_hash = tx.get('unchanged_emulator_tx_hash')
-                    expected_hash = tx['tx'].get_hash()
-                    account_diff_obj = {
-                        'data': make_json_dumpable(sa_diff.to_dict()),
-                        'account_emulator_tx_hash_match': (unchanged_hash == expected_hash)
-                    }
-                except Exception:
-                    account_diff_obj = {'data': make_json_dumpable(sa_diff.to_dict())}
-        except Exception as e:
-            logger.error(f"ACCOUNT DIFF ERROR for tx {transaction_hash}: {e}")
 
         # Build node for emulated tx
         mode_info = self._summarize_mode(tmp_out)
@@ -591,10 +577,9 @@ class TraceOrderedRunner:
             'bounced': in_bounced,
             'mode': mode_info.get('mode'),
             **({'diff': mode_info['diff']} if 'diff' in mode_info else {}),
+            **({'color_schema_log': mode_info['log']} if 'log' in mode_info else {}),
             'children': []
         }
-        if account_diff_obj is not None:
-            node['account_diff'] = account_diff_obj
 
         expected_children_ordered = self.child_map.get(transaction_hash, [])
         link_map = self.child_link_map.get(transaction_hash, {})
@@ -609,7 +594,8 @@ class TraceOrderedRunner:
                 child_transaction_hash = link_map.get(mh_b64)
                 if child_transaction_hash:
                     child_dest = m.get('dest').raw if m.get('dest') is not None else None
-                    child_node = self._process_tx(child_transaction_hash, out, visited, mh_b64, body_b64, opcode, child_dest,
+                    child_node = self._process_tx(child_transaction_hash, out, visited, mh_b64, body_b64, opcode,
+                                                  child_dest,
                                                   m.get('bounce'), m.get('bounced'))
                     if child_node is not None:
                         node['children'].append(child_node)
@@ -673,7 +659,7 @@ class TraceOrderedRunner:
                             self.account_states1[child_block_key][child_account_addr] = child_state
                             # Run override emulation with child's timing
                             tmp_out2, new_state_child, _ns2, child_out_msgs = emulate_tx_step_with_in_msg(
-                                self.blocks[child_block_key], child_tx, em_child, child_state, m['cell'], self.loglevel,
+                                self.blocks[child_block_key], child_tx, em_child, child_state, child_tx.get('after_state_em2', None), m['cell'], self.loglevel,
                                 self.color_schema, True
                             )
                             out.extend(tmp_out2)
@@ -693,6 +679,7 @@ class TraceOrderedRunner:
                                 'bounced': m.get('bounced'),
                                 'mode': child_mode.get('mode'),
                                 **({'diff': child_mode['diff']} if 'diff' in child_mode else {}),
+                                **({'color_schema_log': child_mode['log']} if 'log' in child_mode else {}),
                                 'children': []
                             }
                             # Process child's emitted messages against its expected children with override logic
@@ -824,11 +811,13 @@ class TraceOrderedRunner:
         # Prepare not_presented list by a second recursive pass
         present_hashes = self._collect_in_hashes(self.emulated_trace_root)
         not_presented = self._collect_not_presented(self.original_trace_root, present_hashes)
+
         # Record original and emulated trace (no diff) into failed_traces.json
         # Compute final status breakdown
         def _count_modes(node):
             from collections import Counter
             cnt = Counter()
+
             def dfs(n):
                 if not isinstance(n, dict):
                     return
@@ -845,17 +834,19 @@ class TraceOrderedRunner:
                     cnt['missed'] += 1
                 for ch in (n.get('children') or []):
                     dfs(ch)
+
             dfs(node)
             return cnt
+
         counts = _count_modes(self.emulated_trace_root or {})
         # missed also includes original children not presented at all
         missed_total = counts.get('missed', 0) + len(not_presented)
         final_success = (
-            (self.emulated_trace_root is not None)
-            and counts.get('warnings', 0) == 0
-            and counts.get('unsuccess', 0) == 0
-            and counts.get('new', 0) == 0
-            and missed_total == 0
+                (self.emulated_trace_root is not None)
+                and counts.get('warnings', 0) == 0
+                and counts.get('unsuccess', 0) == 0
+                and counts.get('new', 0) == 0
+                and missed_total == 0
         )
         entry = {
             'type': 'trace_tree_comparison',

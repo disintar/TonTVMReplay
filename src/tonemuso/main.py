@@ -68,7 +68,7 @@ def collect_raw(data):
                 account_state_em1,
                 account_state_em2,
                 LOGLEVEL,
-                COLOR_SCHEMA
+                None
             )
             # Attach BEFORE/AFTER states and unchanged emulator tx hash (if available)
             tx['before_state_em1'] = before_state_em1
@@ -266,6 +266,23 @@ def _process_one_trace_worker(args):
 
 
 def main():
+    # Print the current run type for visibility
+    try:
+        run_type = None
+        if os.getenv("TONCENTER_TRACES_BY_MASTERS"):
+            run_type = "traces-based"
+        else:
+            toncenter_tx_hash = os.getenv("TONCENTER_TX_HASH", None)
+            toncenter_msg_hash = os.getenv("TONCENTER_MSG_HASH", None)
+            if (toncenter_tx_hash and toncenter_tx_hash.strip()) or (toncenter_msg_hash and toncenter_msg_hash.strip()):
+                run_type = "solo-tx-trace"
+            else:
+                # Using liteserver to scan/emu blocks without a specific trace
+                run_type = "liteserver-base"
+        logger.warning(f"Run type: {run_type}")
+    except Exception:
+        # Non-fatal if printing fails
+        logger.warning(f"Run type: UNKNOWN")
     # Use environment variables for configuration (no CLI flags for tx/msg hash / toncenter)
     toncenter_tx_hash = os.getenv("TONCENTER_TX_HASH", None)
     toncenter_msg_hash = os.getenv("TONCENTER_MSG_HASH", None)
