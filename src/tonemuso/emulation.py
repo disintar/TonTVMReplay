@@ -197,7 +197,10 @@ def emulate_tx_step(block: Dict[str, Any],
 
         # Always include secondary emulator info if available
         account_diff_dict = None
+        account_color_level = None
+        account_color_log = None
         unchanged_emulator_tx_hash = None
+        sa_diff = None
         try:
             if em2 is not None:
                 unchanged_emulator_tx_hash = em2.transaction.get_hash() if em2.transaction is not None else None
@@ -205,6 +208,11 @@ def emulate_tx_step(block: Dict[str, Any],
                 account_diff_dict = {'data': make_json_dumpable(sa_diff.to_dict()),
                                      'account_emulator_tx_hash_match': unchanged_emulator_tx_hash == tx[
                                          'tx'].get_hash()}
+                if color_schema is not None and 'account' in color_schema:
+                    acc_level, acc_log = get_colored_diff(sa_diff, color_schema, root='account')
+                    account_diff_dict['acc_level'] = acc_level
+                    account_diff_dict['acc_log'] = acc_log
+
             elif force_state_check_without_emulation2:
                 sa_diff = get_shard_account_diff(em.account.to_cell(), account_state_em2)
                 account_diff_dict = {'data': make_json_dumpable(sa_diff.to_dict()),
@@ -386,7 +394,7 @@ def emulate_tx_step_with_in_msg(block: Dict[str, Any],
                     account_diff_dict['acc_log'] = acc_log
         except Exception as ee:
             logger.error(f"ACCOUNT DIFF ERROR: {ee}")
-        
+
         if color_schema is None:
             diff_dict = diff.to_dict()
             go_as_success = False
@@ -405,7 +413,7 @@ def emulate_tx_step_with_in_msg(block: Dict[str, Any],
                 logger.debug(f"Get color schema")
 
             max_level, log = get_colored_diff(diff, color_schema)
-            
+
             # If we have account diff and schema has 'account', evaluate and promote
             if account_diff_dict is not None and 'account' in color_schema:
                 try:
@@ -416,7 +424,7 @@ def emulate_tx_step_with_in_msg(block: Dict[str, Any],
                     log = {**log, 'account': acc_log}
                 except Exception as e:
                     logger.error(f"ACCOUNT COLOR SCHEMA ERROR: {e}")
-            
+
             address = f"{block['block_id'].id.workchain}:{address}"
 
             if loglevel > 5:

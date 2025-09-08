@@ -2,26 +2,21 @@
   "transaction": {
     "account_addr": "alarm",
     "lt": "alarm",
-    "prev_trans_hash": "warn",
+    "prev_trans_hash": "alarm",
     "prev_trans_lt": "alarm",
     "now": "alarm",
     "outmsg_cnt": "alarm",
-    "orig_status": "alarm",
-    "end_status": "alarm",
+    "orig_status": "warn",
+    "end_status": "warn",
     "r1": {
-      "in_msg": {
-        "value": {
-          "info": {
-            "value": {
-              "grams": "warn"
-            }
-          }
-        }
-      },
-      "out_msgs": "warn"
+      "in_msg": "alarm",
+      "out_msgs": "alarm"
     },
-    "total_fees": "warn",
-    "state_update": "warn",
+    "total_fees": {
+      "grams": "alarm",
+      "other": "alarm"
+    },
+    "state_update": "alarm",
     "description": {
       "is_tock": "alarm",
       "storage_ph": {
@@ -29,23 +24,16 @@
         "storage_fees_due": "alarm",
         "status_change": "alarm"
       },
-      "credit_ph": {
-        "value": {
-          "credit": {
-            "grams": "warn"
-          }
-        }
-      },
       "compute_ph": {
         "success": "alarm",
         "msg_state_used": "alarm",
         "account_activated": "alarm",
-        "gas_fees": "warn",
+        "gas_fees": "alarm",
         "r1": {
           "gas_used": "warn",
           "gas_limit": "warn",
           "gas_credit": "warn",
-          "mode": "alarm",
+          "mode": "warn",
           "exit_code": "alarm",
           "exit_arg": "alarm",
           "vm_steps": "alarm",
@@ -78,7 +66,7 @@
       "destroyed": "alarm"
     }
   },
-  "account": {},
-  "trace": {
+  "account": {
+
   }
 }

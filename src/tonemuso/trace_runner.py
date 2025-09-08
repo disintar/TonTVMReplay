@@ -9,7 +9,7 @@ from loguru import logger
 
 from tonemuso.emulation import init_emulators, emulate_tx_step, emulate_tx_step_with_in_msg
 from tonemuso.utils import b64_to_hex, hex_to_b64
-from tonemuso.diff import get_shard_account_diff, make_json_dumpable
+from tonemuso.diff import get_shard_account_diff, make_json_dumpable, get_colored_diff
 
 # Type aliases for readability
 BlockKey = Tuple[int, int, int, int]
@@ -46,8 +46,9 @@ class TraceOrderedRunner:
         self.blocks: Dict[BlockKey, Dict[str, Any]] = OrderedDict()
         self.block_emulators: Dict[BlockKey, Tuple[EmulatorExtern, Optional[EmulatorExtern]]] = OrderedDict()
         self.account_states1: Dict[BlockKey, Dict[Address, Cell]] = defaultdict(OrderedDict)
-        # Default initial account state per block (for lazy seeding)
-        self.default_initial_state: Dict[BlockKey, Cell] = {}
+        # Default initial account state per block per account (for lazy seeding)
+        # Structure: { block_key: { Address: Cell } }
+        self.default_initial_state: Dict[BlockKey, Dict[Address, Cell]] = defaultdict(OrderedDict)
         # Per-transaction BEFORE states captured in main.collect_raw emulation
         self.before_states: Dict[TxHashHex, Cell] = OrderedDict()
 
@@ -83,8 +84,8 @@ class TraceOrderedRunner:
                 self.blocks = OrderedDict(preindexed.get('blocks') or {})
                 # Do not pass emulators
                 self.account_states1 = defaultdict(OrderedDict)
-                # Default initial state per block (for lazy seeding)
-                self.default_initial_state = dict(preindexed.get('default_initial_state') or {})
+                # Default initial state per block per account (for lazy seeding)
+                self.default_initial_state = defaultdict(OrderedDict, preindexed.get('default_initial_state') or {})
                 self.before_states = OrderedDict(preindexed.get('before_states') or {})
             except Exception as e:
                 logger.error(f"Failed to apply preindexed data; falling back to raw indexing: {e}")
@@ -104,8 +105,10 @@ class TraceOrderedRunner:
 
     def _summarize_mode(self, entries: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Reduce emulate_tx_step(...) out entries to a compact node annotation with mode and optional diff.
-        - If any non-success entry exists, take the first one and include its 'mode' and 'diff' (if present).
+        Reduce emulate_tx_step(...) out entries to a compact node annotation with mode and optional info.
+        - If any non-success entry exists, take the first one and include its 'mode'.
+        - Also forward 'diff', 'color_schema_log', 'account_color_schema_log', 'account_color_level',
+          'unchanged_emulator_tx_hash' if present in that entry.
         - Otherwise, return {'mode': 'success'}.
         """
         for e in entries or []:
@@ -114,7 +117,10 @@ class TraceOrderedRunner:
                 summary = {'mode': m}
                 if 'diff' in e:
                     summary['diff'] = e['diff']
-                    summary['log'] = e['color_schema_log']
+                if 'color_schema_log' in e:
+                    summary['color_schema_log'] = e['color_schema_log']
+                if 'unchanged_emulator_tx_hash' in e:
+                    summary['unchanged_emulator_tx_hash'] = e['unchanged_emulator_tx_hash']
                 return summary
         return {'mode': 'success'}
 
@@ -245,14 +251,16 @@ class TraceOrderedRunner:
             blk = block['block_id']
             block_key: BlockKey = (blk.id.workchain, blk.id.shard, blk.id.seqno, blk.root_hash)
             self.blocks[block_key] = block
-            # Record default initial state per block (for lazy seeding)
-            if block_key not in self.default_initial_state:
-                self.default_initial_state[block_key] = initial_account_state
+            # Record default initial state per account in this block (for lazy seeding)
+            # Note: raw_chunks provide initial_account_state corresponding to the account of txs in this chunk.
+            # We will assign it per-account below when we parse txs.
             for tx in txs:
                 tx_tlb = Transaction().cell_unpack(tx['tx'], True)
                 account_address = int(tx_tlb.account_addr, 2)
                 account_addr = Address(f"{block_key[0]}:{hex(account_address).upper()[2:].zfill(64)}")
-                # Seed default account state from initial if not set
+                # Seed default account state maps
+                if account_addr not in self.default_initial_state[block_key]:
+                    self.default_initial_state[block_key][account_addr] = initial_account_state
                 if account_addr not in self.account_states1[block_key]:
                     self.account_states1[block_key][account_addr] = initial_account_state
                 transaction_hash = tx['tx'].get_hash().upper()
@@ -318,9 +326,13 @@ class TraceOrderedRunner:
             Optional[Dict[str, Any]]:
         # Destination account as Address
         dest_addr: Address = msg['dest']
+        if dest_addr.raw == '51476388672B7ABDE0853403E633415A8BBC32E3755F0849239441C259E38E3B':
+            print(123)
         self._ensure_account_state(block_key, dest_addr)
         em, _ = self._get_emulators(block_key)
-        state1 = self.account_states1[block_key].get(dest_addr) or self.default_initial_state.get(block_key)
+        state1 = (self.account_states1[block_key].get(dest_addr)
+                  or self.default_initial_state.get(block_key, {}).get(dest_addr)
+                  or self._fetch_state_for_account(block_key, dest_addr))
         try:
             ok = em.emulate_transaction(state1, msg['cell'], now, lt)
             if ok:
@@ -446,9 +458,12 @@ class TraceOrderedRunner:
                             gc_account_int = int(gc_tlb.account_addr, 2)
                             gc_account_addr = Address(f"{gc_block_key[0]}:{hex(gc_account_int).upper()[2:].zfill(64)}")
                             emu, _ = self._get_emulators(gc_block_key)
+                            if emitted_dest_raw == '51476388672B7ABDE0853403E633415A8BBC32E3755F0849239441C259E38E3B':
+                                print(123)
                             gc_state = (self.global_overrides.get(gc_account_addr)
-                                        or self.account_states1[gc_block_key].get(gc_account_addr)
-                                        or self.default_initial_state.get(gc_block_key))
+                                       or self.account_states1[gc_block_key].get(gc_account_addr)
+                                       or self.default_initial_state.get(gc_block_key, {}).get(gc_account_addr)
+                                       or self._fetch_state_for_account(gc_block_key, gc_account_addr))
                             self.account_states1[gc_block_key][gc_account_addr] = gc_state
                             # Emulate with override message
                             tmp_out3, new_state_gc, _ns, gc_out_msgs = emulate_tx_step_with_in_msg(
@@ -470,7 +485,8 @@ class TraceOrderedRunner:
                                 'destination': emitted_dest_raw,
                                 'mode': mode.get('mode'),
                                 **({'diff': mode['diff']} if 'diff' in mode else {}),
-                                **({'color_schema_log': mode['log']} if 'log' in mode else {}),
+                                **({'color_schema_log': mode['color_schema_log']} if 'color_schema_log' in mode else {}),
+                                **({'unchanged_emulator_tx_hash': mode['unchanged_emulator_tx_hash']} if 'unchanged_emulator_tx_hash' in mode else {}),
                                 'children': []
                             }
                             # Recurse for grandchildren using this same logic
@@ -545,7 +561,8 @@ class TraceOrderedRunner:
         state1 = (self.global_overrides.get(account_addr)  # if any other tx come to this account_addr in past
                   or self.before_states.get(transaction_hash)
                   or self.account_states1[block_key].get(account_addr)
-                  or self.default_initial_state.get(block_key))
+                  or self.default_initial_state.get(block_key, {}).get(account_addr)
+                  or self._fetch_state_for_account(block_key, account_addr))
         # Sync the stored account state to the chosen BEFORE state
         self.account_states1[block_key][account_addr] = state1
 
@@ -565,6 +582,26 @@ class TraceOrderedRunner:
         out.extend(tmp_out)
         self.account_states1[block_key][account_addr] = new_state1
 
+        # Compute account state diff vs AFTER state from second emulator (if available from collect_raw)
+        account_diff_obj = None
+        sa_diff = None
+        try:
+            after_state_em2 = tx.get('after_state_em2')
+            if after_state_em2 is not None and new_state1 is not None:
+                sa_diff = get_shard_account_diff(new_state1, after_state_em2)
+                # Also compute whether unchanged emulator produced the same tx hash (if collected)
+                try:
+                    unchanged_hash = tx.get('unchanged_emulator_tx_hash')
+                    expected_hash = tx['tx'].get_hash()
+                    account_diff_obj = {
+                        'data': make_json_dumpable(sa_diff.to_dict()),
+                        'account_emulator_tx_hash_match': (unchanged_hash == expected_hash)
+                    }
+                except Exception:
+                    account_diff_obj = {'data': make_json_dumpable(sa_diff.to_dict())}
+        except Exception as e:
+            logger.error(f"ACCOUNT DIFF ERROR for tx {transaction_hash}: {e}")
+
         # Build node for emulated tx
         mode_info = self._summarize_mode(tmp_out)
         node: Dict[str, Any] = {
@@ -577,7 +614,8 @@ class TraceOrderedRunner:
             'bounced': in_bounced,
             'mode': mode_info.get('mode'),
             **({'diff': mode_info['diff']} if 'diff' in mode_info else {}),
-            **({'color_schema_log': mode_info['log']} if 'log' in mode_info else {}),
+            **({'unchanged_emulator_tx_hash': mode_info['unchanged_emulator_tx_hash']} if 'unchanged_emulator_tx_hash' in mode_info else {}),
+            **({'color_schema_log': mode_info['color_schema_log']} if 'color_schema_log' in mode_info else {}),
             'children': []
         }
 
@@ -655,7 +693,8 @@ class TraceOrderedRunner:
                             em_child, _ = self._get_emulators(child_block_key)
                             child_state = (self.global_overrides.get(child_account_addr)
                                            or self.account_states1[child_block_key].get(child_account_addr)
-                                           or self.default_initial_state.get(child_block_key))
+                                           or self.default_initial_state.get(child_block_key, {}).get(child_account_addr)
+                                           or self._fetch_state_for_account(child_block_key, child_account_addr))
                             self.account_states1[child_block_key][child_account_addr] = child_state
                             # Run override emulation with child's timing
                             tmp_out2, new_state_child, _ns2, child_out_msgs = emulate_tx_step_with_in_msg(
@@ -679,7 +718,8 @@ class TraceOrderedRunner:
                                 'bounced': m.get('bounced'),
                                 'mode': child_mode.get('mode'),
                                 **({'diff': child_mode['diff']} if 'diff' in child_mode else {}),
-                                **({'color_schema_log': child_mode['log']} if 'log' in child_mode else {}),
+                                **({'unchanged_emulator_tx_hash': child_mode['unchanged_emulator_tx_hash']} if 'unchanged_emulator_tx_hash' in child_mode else {}),
+                                **({'color_schema_log': child_mode['color_schema_log']} if 'color_schema_log' in child_mode else {}),
                                 'children': []
                             }
                             # Process child's emitted messages against its expected children with override logic
@@ -841,22 +881,146 @@ class TraceOrderedRunner:
         counts = _count_modes(self.emulated_trace_root or {})
         # missed also includes original children not presented at all
         missed_total = counts.get('missed', 0) + len(not_presented)
+
+        # Helper: normalize opcode to int if possible
+        def _norm_op(v) -> Optional[int]:
+            try:
+                if v is None:
+                    return None
+                if isinstance(v, int):
+                    return v
+                if isinstance(v, str):
+                    s = v.strip().lower()
+                    if s.startswith('0x'):
+                        return int(s, 16)
+                    return int(s)
+            except Exception:
+                return None
+            return None
+
+        # Check if extra new tx is allowed by color schema (diff_colored.json)
+        # Return number of allowed "new_transaction" nodes (0 if not allowed)
+        def _allowed_extra_new_count(root_node) -> int:
+            try:
+                schema = self.color_schema if isinstance(self.color_schema, dict) else {}
+                trace_cfg = schema.get('trace') or {}
+                allow = trace_cfg.get('allow_extra_tx') or []
+                if not isinstance(allow, list) or not allow:
+                    return 0
+                # Build allow sets
+                allow_plain: Set[int] = set()
+                allow_bounced: Set[int] = set()
+                for it in allow:
+                    if not isinstance(it, dict):
+                        continue
+                    op_raw = it.get('op')
+                    opn = _norm_op(op_raw)
+                    if opn is None:
+                        continue
+                    allow_plain.add(opn)
+                    if bool(it.get('with_bounced')):
+                        allow_bounced.add(opn)
+
+                # Respect global constraints: warnings/unsuccess/missed must still fail
+                if counts.get('unsuccess', 0) != 0 or counts.get('warnings', 0) != 0:
+                    return 0
+                if missed_total != 0:
+                    return 0
+
+                # Collect all new nodes
+                new_nodes: List[Dict[str, Any]] = []
+                def dfs_collect(n):
+                    if not isinstance(n, dict):
+                        return
+                    if n.get('mode') == 'new_transaction':
+                        new_nodes.append(n)
+                    for ch in (n.get('children') or []):
+                        dfs_collect(ch)
+                dfs_collect(root_node)
+
+                if not new_nodes:
+                    return 0
+                # Only allow scenarios originating from a single extra root node (and at most one bounced child)
+                if len(new_nodes) > 2:
+                    return 0
+
+                # Identify the top-most new node (one whose parent is not new). Build parent map first.
+                parent_of: Dict[int, Optional[int]] = {}
+                flat: List[Dict[str, Any]] = []
+                def dfs_parent(n, parent_idx=None):
+                    if not isinstance(n, dict):
+                        return
+                    idx = len(flat)
+                    flat.append(n)
+                    parent_of[idx] = parent_idx
+                    for ch in (n.get('children') or []):
+                        dfs_parent(ch, idx)
+                dfs_parent(root_node)
+                new_indices = [i for i, node in enumerate(flat) if node.get('mode') == 'new_transaction']
+                if not new_indices:
+                    return 0
+                # Pick roots among new nodes
+                new_roots = [i for i in new_indices if parent_of.get(i) is None or flat[parent_of[i]].get('mode') != 'new_transaction']
+                if len(new_roots) != 1:
+                    return 0
+                root_new_idx = new_roots[0]
+                root_new = flat[root_new_idx]
+                op_int = _norm_op(root_new.get('opcode'))
+                if op_int is None or op_int not in allow_plain:
+                    return 0
+                children = root_new.get('children') or []
+                # Case A: no children
+                if len(children) == 0:
+                    # Ensure there are no other new nodes
+                    return 1 if len(new_nodes) == 1 else 0
+                # Case B: exactly one bounced child allowed if configured
+                if len(children) == 1 and op_int in allow_bounced:
+                    ch = children[0]
+                    if isinstance(ch, dict) and ch.get('mode') == 'new_transaction' and bool(ch.get('bounced')) is True:
+                        # Child must have no further children
+                        if len(ch.get('children') or []) == 0 and len(new_nodes) == 2:
+                            return 2
+                return 0
+            except Exception:
+                return 0
+
+        allowed_extra_applied = False
+        allowed_extra_new = 0
+        if self.emulated_trace_root is not None:
+            allowed_extra_new = _allowed_extra_new_count(self.emulated_trace_root)
+            allowed_extra_applied = allowed_extra_new > 0
+
         final_success = (
-                (self.emulated_trace_root is not None)
-                and counts.get('warnings', 0) == 0
-                and counts.get('unsuccess', 0) == 0
-                and counts.get('new', 0) == 0
-                and missed_total == 0
+            (self.emulated_trace_root is not None)
+            and counts.get('warnings', 0) == 0
+            and counts.get('unsuccess', 0) == 0
+            and (counts.get('new', 0) - allowed_extra_new) == 0
+            and missed_total == 0
         )
+
+        # Decide final status: success, warning (only warnings), or error (unsuccess/new/missed present)
+        if final_success:
+            final_status = 'success'
+        else:
+            only_warnings = (
+                counts.get('unsuccess', 0) == 0 and
+                (counts.get('new', 0) - allowed_extra_new) == 0 and
+                missed_total == 0 and
+                counts.get('warnings', 0) > 0
+            )
+            final_status = 'warning' if only_warnings else 'error'
+
         entry = {
             'type': 'trace_tree_comparison',
             'root_tx': hex_to_b64(root_transaction_hash),
             'original_trace': self.original_trace_root,
             'emulated_trace': self.emulated_trace_root,
             'not_presented': not_presented,
-            'final_status': 'success' if final_success else 'error'
+            'final_status': final_status
         }
-        if not final_success:
+        if allowed_extra_applied:
+            entry['allowed_extra_applied'] = True
+        if final_status != 'success':
             entry['final_status_detailed'] = {
                 'success': counts.get('success', 0),
                 'unsuccess': counts.get('unsuccess', 0),
