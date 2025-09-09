@@ -61,6 +61,9 @@ class TraceOrderedRunner:
         # Results and global state overrides
         self.failed_traces: List[Dict[str, Any]] = []
         self.global_overrides: Dict[Address, Cell] = OrderedDict()
+        # Track which original expected children were actually used for comparison
+        # Each entry is a tuple (parent_tx_hash_hex, expected_in_msg_b64)
+        self.used_original_pairs: Set[Tuple[TxHashHex, MsgHashB64]] = set()
 
         # Store original tx details and build message metadata for quick lookup
         self.original_tx_details: Dict[str, Any] = OrderedDict(toncenter_tx_details or {})
@@ -121,6 +124,8 @@ class TraceOrderedRunner:
                     summary['color_schema_log'] = e['color_schema_log']
                 if 'unchanged_emulator_tx_hash' in e:
                     summary['unchanged_emulator_tx_hash'] = e['unchanged_emulator_tx_hash']
+                if 'account_emulator_tx_hash_match' in e:
+                    summary['account_emulator_tx_hash_match'] = e['account_emulator_tx_hash_match']
                 return summary
         return {'mode': 'success'}
 
@@ -403,6 +408,7 @@ class TraceOrderedRunner:
             if i < len(expected) and cm_b64 == expected[i]:
                 child_transaction_hash = links.get(cm_b64)
                 if child_transaction_hash:
+                    self.used_original_pairs.add((parent_transaction_hash, expected[i]))
                     gc_dest = cm.get('dest').raw if cm.get('dest') is not None else None
                     gc_node = self._process_tx(child_transaction_hash, out, visited, cm_b64, cbody_b64, cop, gc_dest,
                                                cm.get('bounce'),
@@ -487,6 +493,7 @@ class TraceOrderedRunner:
                                 **({'diff': mode['diff']} if 'diff' in mode else {}),
                                 **({'color_schema_log': mode['color_schema_log']} if 'color_schema_log' in mode else {}),
                                 **({'unchanged_emulator_tx_hash': mode['unchanged_emulator_tx_hash']} if 'unchanged_emulator_tx_hash' in mode else {}),
+                                **({'account_emulator_tx_hash_match': mode['account_emulator_tx_hash_match']} if 'account_emulator_tx_hash_match' in mode else {}),
                                 'children': []
                             }
                             # Recurse for grandchildren using this same logic
@@ -496,6 +503,7 @@ class TraceOrderedRunner:
                             )
                             gc_node['children'].extend(gc_children)
                             nodes.append(gc_node)
+                            self.used_original_pairs.add((parent_transaction_hash, expected_in_b64))
                             i += 1
                             continue
                 # Else treat as extra (new) message
@@ -616,6 +624,7 @@ class TraceOrderedRunner:
             **({'diff': mode_info['diff']} if 'diff' in mode_info else {}),
             **({'unchanged_emulator_tx_hash': mode_info['unchanged_emulator_tx_hash']} if 'unchanged_emulator_tx_hash' in mode_info else {}),
             **({'color_schema_log': mode_info['color_schema_log']} if 'color_schema_log' in mode_info else {}),
+            **({'account_emulator_tx_hash_match': mode_info['account_emulator_tx_hash_match']} if 'account_emulator_tx_hash_match' in mode_info else {}),
             'children': []
         }
 
@@ -631,6 +640,7 @@ class TraceOrderedRunner:
             if i < len(expected_children_ordered) and mh_b64 == expected_children_ordered[i]:
                 child_transaction_hash = link_map.get(mh_b64)
                 if child_transaction_hash:
+                    self.used_original_pairs.add((transaction_hash, expected_children_ordered[i]))
                     child_dest = m.get('dest').raw if m.get('dest') is not None else None
                     child_node = self._process_tx(child_transaction_hash, out, visited, mh_b64, body_b64, opcode,
                                                   child_dest,
@@ -720,6 +730,7 @@ class TraceOrderedRunner:
                                 **({'diff': child_mode['diff']} if 'diff' in child_mode else {}),
                                 **({'unchanged_emulator_tx_hash': child_mode['unchanged_emulator_tx_hash']} if 'unchanged_emulator_tx_hash' in child_mode else {}),
                                 **({'color_schema_log': child_mode['color_schema_log']} if 'color_schema_log' in child_mode else {}),
+                                **({'account_emulator_tx_hash_match': child_mode['account_emulator_tx_hash_match']} if 'account_emulator_tx_hash_match' in child_mode else {}),
                                 'children': []
                             }
                             # Process child's emitted messages against its expected children with override logic
@@ -733,6 +744,8 @@ class TraceOrderedRunner:
                             )
                             child_node['children'].extend(child_nodes)
                             node['children'].append(child_node)
+                            # Mark this expected child (by position) as used for comparison
+                            self.used_original_pairs.add((transaction_hash, expected_in_b64))
                             # We consumed one expected child position
                             i += 1
                             continue
@@ -790,25 +803,42 @@ class TraceOrderedRunner:
         return seen
 
     def _collect_not_presented(self, orig: Optional[Dict[str, Any]], present: Set[str]) -> List[Dict[str, Any]]:
+        """
+        Determine original transactions that were not used for comparison.
+        We mark a child as 'used' if, during comparison, we actually processed its real transaction
+        (exact in_msg match or position+destination override). Anything else is considered not presented.
+        Note: 'present' is ignored; we rely on self.used_original_pairs.
+        """
         missing: List[Dict[str, Any]] = []
 
-        def walk(n):
-            if not isinstance(n, dict):
+        def walk(node: Optional[Dict[str, Any]]):
+            if not isinstance(node, dict):
                 return
-            ih = n.get('in_msg_hash')
-            if isinstance(ih, str) and ih not in present:
-                # Include the node as-is but ensure schema fields are present
-                missing.append({
-                    'tx_hash': n.get('tx_hash'),
-                    'in_msg_hash': ih,
-                    'in_msg_body_hash': n.get('in_msg_body_hash'),
-                    'opcode': n.get('opcode'),
-                    'destination': n.get('destination'),
-                    'bounce': n.get('bounce'),
-                    'bounced': n.get('bounced'),
-                    'children': []
-                })
-            for ch in n.get('children', []) or []:
+            parent_b64 = node.get('tx_hash')
+            parent_hex = None
+            if isinstance(parent_b64, str):
+                try:
+                    parent_hex = b64_to_hex(parent_b64)
+                except Exception:
+                    parent_hex = None
+            children = node.get('children', []) or []
+            if parent_hex:
+                for ch in children:
+                    if not isinstance(ch, dict):
+                        continue
+                    ih = ch.get('in_msg_hash')
+                    if isinstance(ih, str) and (parent_hex, ih) not in self.used_original_pairs:
+                        missing.append({
+                            'tx_hash': ch.get('tx_hash'),
+                            'in_msg_hash': ih,
+                            'in_msg_body_hash': ch.get('in_msg_body_hash'),
+                            'opcode': ch.get('opcode'),
+                            'destination': ch.get('destination'),
+                            'bounce': ch.get('bounce'),
+                            'bounced': ch.get('bounced'),
+                            'children': []
+                        })
+            for ch in children:
                 walk(ch)
 
         walk(orig)
