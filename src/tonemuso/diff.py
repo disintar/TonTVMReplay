@@ -130,11 +130,15 @@ def get_colored_diff(diff, color_schema, root='transaction'):
                     break
 
                 rule = node.get('warn_if', '')
-                # Conservative parser: supports patterns like "diff > 3 else skip", "abs_diff >= 5 else skip" or "new_value > 100 else warn"
-                m = re.match(r"\s*(diff|abs_diff|new_value)\s*(==|!=|>=|<=|>|<)\s*(-?\d+)\s*else\s*(skip|warn|alarm)\s*$", str(rule))
-                if m:
-                    lhs, op, num_s, else_action = m.groups()
-                    num = int(num_s)
+                # Parser supports single comparisons like "diff > 3 else skip" and chained ranges like "0 <= diff < 1000 else skip"
+                text_rule = str(rule)
+                # First, try chained form: a OP1 (diff|abs_diff|new_value) OP2 b else ACTION
+                m_range = re.match(r"\s*(-?\d+)\s*(<=|<|>=|>)\s*(diff|abs_diff|new_value)\s*(<=|<|>=|>)\s*(-?\d+)\s*else\s*(skip|warn|alarm)\s*$", text_rule)
+                m = None
+                if m_range:
+                    low_s, op1, lhs, op2, high_s, else_action = m_range.groups()
+                    low = int(low_s)
+                    high = int(high_s)
                     # Determine comparable value based on lhs
                     can_compare = False
                     val = None
@@ -148,30 +152,22 @@ def get_colored_diff(diff, color_schema, root='transaction'):
                         val = new_v
                         can_compare = True
                     if can_compare:
-                        cond = False
-                        if op == '==':
-                            cond = (val == num)
-                        elif op == '!=':
-                            cond = (val != num)
-                        elif op == '>':
-                            cond = (val > num)
-                        elif op == '<':
-                            cond = (val < num)
-                        elif op == '>=':
-                            cond = (val >= num)
-                        elif op == '<=':
-                            cond = (val <= num)
-                        else:
-                            logger.warning(f"[COLOR_SCHEMA] {p} has invalid operator")
-                            log['colors']['__'.join(path_list)] = 'alarm'
-                            break
+                        def _cmp(a, op, b):
+                            if op == '<':
+                                return a < b
+                            if op == '<=':
+                                return a <= b
+                            if op == '>':
+                                return a > b
+                            if op == '>=':
+                                return a >= b
+                            return False
+                        cond = _cmp(low, op1, val) and _cmp(val, op2, high)
                         if cond:
-                            # warn
                             if max_level != 'alarm':
                                 max_level = 'warn'
                             log['colors']['__'.join(path_list)] = 'warn'
                         else:
-                            # else action
                             if else_action == 'alarm':
                                 max_level = 'alarm'
                                 log['colors']['__'.join(path_list)] = 'alarm'
@@ -186,6 +182,63 @@ def get_colored_diff(diff, color_schema, root='transaction'):
                                 log['colors']['__'.join(path_list)] = 'alarm'
                                 break
                         applied = True
+                else:
+                    # Fall back to single-comparison form
+                    m = re.match(r"\s*(diff|abs_diff|new_value)\s*(==|!=|>=|<=|>|<)\s*(-?\d+)\s*else\s*(skip|warn|alarm)\s*$", text_rule)
+                    if m:
+                        lhs, op, num_s, else_action = m.groups()
+                        num = int(num_s)
+                        # Determine comparable value based on lhs
+                        can_compare = False
+                        val = None
+                        if lhs == 'diff' and isinstance(old_v, int) and isinstance(new_v, int):
+                            val = diff_v
+                            can_compare = True
+                        elif lhs == 'abs_diff' and isinstance(old_v, int) and isinstance(new_v, int):
+                            val = abs(diff_v)
+                            can_compare = True
+                        elif lhs == 'new_value' and isinstance(new_v, int):
+                            val = new_v
+                            can_compare = True
+                        if can_compare:
+                            cond = False
+                            if op == '==':
+                                cond = (val == num)
+                            elif op == '!=':
+                                cond = (val != num)
+                            elif op == '>':
+                                cond = (val > num)
+                            elif op == '<':
+                                cond = (val < num)
+                            elif op == '>=':
+                                cond = (val >= num)
+                            elif op == '<=':
+                                cond = (val <= num)
+                            else:
+                                logger.warning(f"[COLOR_SCHEMA] {p} has invalid operator")
+                                log['colors']['__'.join(path_list)] = 'alarm'
+                                break
+                            if cond:
+                                # warn
+                                if max_level != 'alarm':
+                                    max_level = 'warn'
+                                log['colors']['__'.join(path_list)] = 'warn'
+                            else:
+                                # else action
+                                if else_action == 'alarm':
+                                    max_level = 'alarm'
+                                    log['colors']['__'.join(path_list)] = 'alarm'
+                                elif else_action == 'warn':
+                                    if max_level != 'alarm':
+                                        max_level = 'warn'
+                                    log['colors']['__'.join(path_list)] = 'warn'
+                                elif else_action == 'skip':
+                                    log['colors']['__'.join(path_list)] = 'skip'
+                                else:
+                                    logger.warning(f"[COLOR_SCHEMA] {p} has invalid else action")
+                                    log['colors']['__'.join(path_list)] = 'alarm'
+                                    break
+                            applied = True
                 if not applied:
                     logger.warning(f"[COLOR_SCHEMA] {p} rule is not applied, but affected")
                     log['colors']['__'.join(path_list)] = 'alarm'
