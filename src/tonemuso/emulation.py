@@ -231,7 +231,10 @@ def emulate_tx_step(block: Dict[str, Any],
         if color_schema is None:
             diff_dict = diff.to_dict()
             go_as_success = False
-            err_obj = {'mode': 'error', 'diff': make_json_dumpable(diff_dict),
+            err_obj = {'mode': 'error', 'diff': {
+                'transaction': make_json_dumpable(diff_dict),
+                'account': account_diff_dict.get('data', None) if isinstance(account_diff_dict, dict) else None,
+            },
                        'address': f"{block['block_id'].id.workchain}:{address}",
                        'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
                        'fail_reason': "hash_missmatch"}

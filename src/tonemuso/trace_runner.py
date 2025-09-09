@@ -464,8 +464,6 @@ class TraceOrderedRunner:
                             gc_account_int = int(gc_tlb.account_addr, 2)
                             gc_account_addr = Address(f"{gc_block_key[0]}:{hex(gc_account_int).upper()[2:].zfill(64)}")
                             emu, _ = self._get_emulators(gc_block_key)
-                            if emitted_dest_raw == '51476388672B7ABDE0853403E633415A8BBC32E3755F0849239441C259E38E3B':
-                                print(123)
                             gc_state = (self.global_overrides.get(gc_account_addr)
                                        or self.account_states1[gc_block_key].get(gc_account_addr)
                                        or self.default_initial_state.get(gc_block_key, {}).get(gc_account_addr)
