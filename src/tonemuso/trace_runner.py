@@ -1,6 +1,7 @@
 # Copyright (c) 2024 Disintar LLP Licensed under the Apache License Version 2.0
 from typing import Dict, Any, List, Tuple, Optional, Set
 from collections import defaultdict, OrderedDict
+from toolz import curry
 
 from tonpy import Cell, LiteClient, begin_cell, BlockId, Address
 from tonpy.tvm.not_native.emulator_extern import EmulatorExtern
@@ -331,8 +332,6 @@ class TraceOrderedRunner:
             Optional[Dict[str, Any]]:
         # Destination account as Address
         dest_addr: Address = msg['dest']
-        if dest_addr.raw == '51476388672B7ABDE0853403E633415A8BBC32E3755F0849239441C259E38E3B':
-            print(123)
         self._ensure_account_state(block_key, dest_addr)
         em, _ = self._get_emulators(block_key)
         state1 = (self.account_states1[block_key].get(dest_addr)
@@ -362,10 +361,23 @@ class TraceOrderedRunner:
                 # Recurse into out messages of this generated tx
                 from tonemuso.emulation import extract_message_info
                 info = extract_message_info(tx_cell)
-                for child_msg in info.get('out_msgs', []):
-                    child_node = self._emulate_internal_message_recursive(block_key, child_msg, now, lt)
-                    if child_node is not None:
-                        node['children'].append(child_node)
+                children = info.get('out_msgs', [])
+                if getattr(self, '_enqueue', None):
+                    # Schedule children for next depth (extras as extras)
+                    parent_hex = generated_transaction_hash
+                    for idx, child_msg in enumerate(children):
+                        self._enqueue(self._current_depth + 1,
+                                      {'exact': False, 'override': False, 'extra': True, 'order_idx': idx},
+                                      (lambda block_key_local=block_key, child_msg_local=child_msg, now_local=now, lt_local=lt:
+                                          self._emulate_internal_message_recursive(block_key_local, child_msg_local, now_local, lt_local)),
+                                      lambda res, n=node: n['children'].append(res) if res is not None else None,
+                                      kind='internal_emul',
+                                      parent_hex=parent_hex)
+                else:
+                    for child_msg in children:
+                        child_node = self._emulate_internal_message_recursive(block_key, child_msg, now, lt)
+                        if child_node is not None:
+                            node['children'].append(child_node)
                 return node
             else:
                 self._record_failed('extra_emulation_failed', dest=str(dest_addr),
@@ -410,11 +422,21 @@ class TraceOrderedRunner:
                 if child_transaction_hash:
                     self.used_original_pairs.add((parent_transaction_hash, expected[i]))
                     gc_dest = cm.get('dest').raw if cm.get('dest') is not None else None
-                    gc_node = self._process_tx(child_transaction_hash, out, visited, cm_b64, cbody_b64, cop, gc_dest,
-                                               cm.get('bounce'),
-                                               cm.get('bounced'))
-                    if gc_node is not None:
-                        nodes.append(gc_node)
+                    if getattr(self, '_enqueue', None):
+                        # schedule exact child tx for next depth
+                        self._enqueue(self._current_depth + 1,
+                                      {'exact': True, 'override': False, 'extra': False, 'order_idx': i},
+                                      (lambda transaction_hash_local=child_transaction_hash, out_local=out, visited_local=visited, in_b64_local=cm_b64, body_b64_local=cbody_b64, opcode_local=cop, dest_local=gc_dest, bounce_local=cm.get('bounce'), bounced_local=cm.get('bounced'):
+                                          self._process_tx(transaction_hash_local, out_local, visited_local, in_b64_local, body_b64_local, opcode_local, dest_local, bounce_local, bounced_local)),
+                                      lambda res, lst=nodes: lst.append(res) if res is not None else None,
+                                      kind='tx',
+                                      parent_hex=parent_transaction_hash)
+                    else:
+                        gc_node = self._process_tx(child_transaction_hash, out, visited, cm_b64, cbody_b64, cop, gc_dest,
+                                                   cm.get('bounce'),
+                                                   cm.get('bounced'))
+                        if gc_node is not None:
+                            nodes.append(gc_node)
                 else:
                     expected_meta = (self.message_meta.get(parent_transaction_hash, {}) or {}).get(cm_b64) or {}
                     dest = expected_meta.get('destination')
@@ -456,60 +478,134 @@ class TraceOrderedRunner:
                             expected_dest_raw = expected_dest
                     emitted_dest_raw = cm.get('dest').raw if cm.get('dest') is not None else None
                     if child_transaction_hash and expected_dest_raw is not None and emitted_dest_raw == expected_dest_raw and 'cell' in cm:
-                        gc_idx = self.tx_index.get(child_transaction_hash)
-                        if gc_idx is not None:
-                            gc_block_key, gc_tx = gc_idx
-                            # Prepare account state
-                            gc_tlb = Transaction().cell_unpack(gc_tx['tx'], True)
-                            gc_account_int = int(gc_tlb.account_addr, 2)
-                            gc_account_addr = Address(f"{gc_block_key[0]}:{hex(gc_account_int).upper()[2:].zfill(64)}")
-                            emu, _ = self._get_emulators(gc_block_key)
-                            gc_state = (self.global_overrides.get(gc_account_addr)
-                                       or self.account_states1[gc_block_key].get(gc_account_addr)
-                                       or self.default_initial_state.get(gc_block_key, {}).get(gc_account_addr)
-                                       or self._fetch_state_for_account(gc_block_key, gc_account_addr))
-                            self.account_states1[gc_block_key][gc_account_addr] = gc_state
-                            # Emulate with override message
-                            tmp_out3, new_state_gc, _ns, gc_out_msgs = emulate_tx_step_with_in_msg(
-                                self.blocks[gc_block_key], gc_tx, emu, gc_state, gc_tx.get('after_state_em2', None), cm['cell'], self.loglevel,
-                                self.color_schema, True
-                            )
-                            out.extend(tmp_out3)
-                            # Determine mode and update state; save to global_overrides only for new/error
-                            mode = self._summarize_mode(tmp_out3)
-                            self.account_states1[gc_block_key][gc_account_addr] = new_state_gc
-                            if mode.get('mode') in ('new_transaction', 'error'):
-                                self.global_overrides[gc_account_addr] = new_state_gc
-                            # Build node for this overridden child and process its children recursively
-                            gc_node = {
-                                'tx_hash': hex_to_b64(child_transaction_hash),
-                                'in_msg_hash': cm_b64,
-                                'in_msg_body_hash': cbody_b64,
-                                'opcode': cop,
-                                'destination': emitted_dest_raw,
-                                'mode': mode.get('mode'),
-                                **({'diff': mode['diff']} if 'diff' in mode else {}),
-                                **({'color_schema_log': mode['color_schema_log']} if 'color_schema_log' in mode else {}),
-                                **({'unchanged_emulator_tx_hash': mode['unchanged_emulator_tx_hash']} if 'unchanged_emulator_tx_hash' in mode else {}),
-                                **({'account_emulator_tx_hash_match': mode['account_emulator_tx_hash_match']} if 'account_emulator_tx_hash_match' in mode else {}),
-                                'children': []
-                            }
-                            # Recurse for grandchildren using this same logic
-                            gc_children = self._process_emitted_children_with_override(
-                                gc_block_key, child_transaction_hash, gc_tx, gc_out_msgs.get('out_msgs', []), out,
-                                visited
-                            )
-                            gc_node['children'].extend(gc_children)
-                            nodes.append(gc_node)
+                        if getattr(self, '_enqueue', None):
+                            # schedule override emulation for next depth as a runnable closure
+                            def run_override(parent_block_key_local=parent_block_key,
+                                             child_transaction_hash_local=child_transaction_hash,
+                                             cm_local=cm,
+                                             cbody_b64_local=cbody_b64,
+                                             cop_local=cop,
+                                             emitted_dest_raw_local=emitted_dest_raw,
+                                             out_local=out,
+                                             visited_local=visited,
+                                             order_idx_local=i):
+                                gc_idx2 = self.tx_index.get(child_transaction_hash_local)
+                                if gc_idx2 is None:
+                                    return None
+                                gc_block_key2, gc_tx2 = gc_idx2
+                                gc_tlb2 = Transaction().cell_unpack(gc_tx2['tx'], True)
+                                gc_account_int2 = int(gc_tlb2.account_addr, 2)
+                                gc_account_addr2 = Address(f"{gc_block_key2[0]}:{hex(gc_account_int2).upper()[2:].zfill(64)}")
+                                emu2, _ = self._get_emulators(gc_block_key2)
+                                gc_state2 = (self.global_overrides.get(gc_account_addr2)
+                                             or self.account_states1[gc_block_key2].get(gc_account_addr2)
+                                             or self.default_initial_state.get(gc_block_key2, {}).get(gc_account_addr2)
+                                             or self._fetch_state_for_account(gc_block_key2, gc_account_addr2))
+                                self.account_states1[gc_block_key2][gc_account_addr2] = gc_state2
+                                tmp_outX, new_state_gc2, _nsX, gc_out_msgs2 = emulate_tx_step_with_in_msg(
+                                    self.blocks[gc_block_key2], gc_tx2, emu2, gc_state2, gc_tx2.get('after_state_em2', None), cm_local['cell'], self.loglevel,
+                                    self.color_schema, True
+                                )
+                                out_local.extend(tmp_outX)
+                                mode2 = self._summarize_mode(tmp_outX)
+                                self.account_states1[gc_block_key2][gc_account_addr2] = new_state_gc2
+                                if mode2.get('mode') in ('new_transaction', 'error'):
+                                    self.global_overrides[gc_account_addr2] = new_state_gc2
+                                node2 = {
+                                    'tx_hash': hex_to_b64(child_transaction_hash_local),
+                                    'in_msg_hash': hex_to_b64(cm_local['msg_hash']),
+                                    'in_msg_body_hash': cbody_b64_local,
+                                    'opcode': cop_local,
+                                    'destination': emitted_dest_raw_local,
+                                    'mode': mode2.get('mode'),
+                                    **({'diff': mode2['diff']} if 'diff' in mode2 else {}),
+                                    **({'color_schema_log': mode2['color_schema_log']} if 'color_schema_log' in mode2 else {}),
+                                    **({'unchanged_emulator_tx_hash': mode2['unchanged_emulator_tx_hash']} if 'unchanged_emulator_tx_hash' in mode2 else {}),
+                                    **({'account_emulator_tx_hash_match': mode2['account_emulator_tx_hash_match']} if 'account_emulator_tx_hash_match' in mode2 else {}),
+                                    'children': []
+                                }
+                                # Schedule grandchildren comparison for next depth
+                                self._enqueue(self._current_depth + 1,
+                                              {'exact': True, 'override': False, 'extra': False, 'order_idx': order_idx_local},
+                                              (lambda parent_block_key_local=gc_block_key2, parent_hex_local=b64_to_hex(node2['tx_hash']), parent_tx_local=gc_tx2, emitted_list_local=(gc_out_msgs2 or {}).get('out_msgs', []), out_local2=out_local, visited_local2=visited_local:
+                                                  self._process_emitted_children_with_override(parent_block_key_local, parent_hex_local, parent_tx_local, emitted_list_local, out_local2, visited_local2)),
+                                              lambda lst, n=node2: n['children'].extend(lst or []),
+                                              kind='children_with_override',
+                                              parent_hex=child_transaction_hash_local)
+                                return node2
+                            self._enqueue(self._current_depth + 1,
+                                          {'exact': False, 'override': True, 'extra': False, 'order_idx': i},
+                                          run_override,
+                                          lambda res, lst=nodes: lst.append(res) if res is not None else None,
+                                          kind='tx',
+                                          parent_hex=parent_transaction_hash)
                             self.used_original_pairs.add((parent_transaction_hash, expected_in_b64))
                             i += 1
                             continue
+                        else:
+                            gc_idx = self.tx_index.get(child_transaction_hash)
+                            if gc_idx is not None:
+                                gc_block_key, gc_tx = gc_idx
+                                # Prepare account state
+                                gc_tlb = Transaction().cell_unpack(gc_tx['tx'], True)
+                                gc_account_int = int(gc_tlb.account_addr, 2)
+                                gc_account_addr = Address(f"{gc_block_key[0]}:{hex(gc_account_int).upper()[2:].zfill(64)}")
+                                emu, _ = self._get_emulators(gc_block_key)
+                                gc_state = (self.global_overrides.get(gc_account_addr)
+                                           or self.account_states1[gc_block_key].get(gc_account_addr)
+                                           or self.default_initial_state.get(gc_block_key, {}).get(gc_account_addr)
+                                           or self._fetch_state_for_account(gc_block_key, gc_account_addr))
+                                self.account_states1[gc_block_key][gc_account_addr] = gc_state
+                                # Emulate with override message
+                                tmp_out3, new_state_gc, _ns, gc_out_msgs = emulate_tx_step_with_in_msg(
+                                    self.blocks[gc_block_key], gc_tx, emu, gc_state, gc_tx.get('after_state_em2', None), cm['cell'], self.loglevel,
+                                    self.color_schema, True
+                                )
+                                out.extend(tmp_out3)
+                                # Determine mode and update state; save to global_overrides only for new/error
+                                mode = self._summarize_mode(tmp_out3)
+                                self.account_states1[gc_block_key][gc_account_addr] = new_state_gc
+                                if mode.get('mode') in ('new_transaction', 'error'):
+                                    self.global_overrides[gc_account_addr] = new_state_gc
+                                # Build node for this overridden child and process its children recursively
+                                gc_node = {
+                                    'tx_hash': hex_to_b64(child_transaction_hash),
+                                    'in_msg_hash': cm_b64,
+                                    'in_msg_body_hash': cbody_b64,
+                                    'opcode': cop,
+                                    'destination': emitted_dest_raw,
+                                    'mode': mode.get('mode'),
+                                    **({'diff': mode['diff']} if 'diff' in mode else {}),
+                                    **({'color_schema_log': mode['color_schema_log']} if 'color_schema_log' in mode else {}),
+                                    **({'unchanged_emulator_tx_hash': mode['unchanged_emulator_tx_hash']} if 'unchanged_emulator_tx_hash' in mode else {}),
+                                    **({'account_emulator_tx_hash_match': mode['account_emulator_tx_hash_match']} if 'account_emulator_tx_hash_match' in mode else {}),
+                                    'children': []
+                                }
+                                # Recurse for grandchildren using this same logic
+                                gc_children = self._process_emitted_children_with_override(
+                                    gc_block_key, child_transaction_hash, gc_tx, gc_out_msgs.get('out_msgs', []), out,
+                                    visited
+                                )
+                                gc_node['children'].extend(gc_children)
+                                nodes.append(gc_node)
+                                self.used_original_pairs.add((parent_transaction_hash, expected_in_b64))
+                                i += 1
+                                continue
                 # Else treat as extra (new) message
                 if cm is not None and 'cell' in cm:
-                    extra_node = self._emulate_internal_message_recursive(parent_block_key, cm, parent_tx['now'],
-                                                                          parent_tx['lt'])
-                    if extra_node is not None:
-                        nodes.append(extra_node)
+                    if getattr(self, '_enqueue', None):
+                        self._enqueue(self._current_depth + 1,
+                                      {'exact': False, 'override': False, 'extra': True, 'order_idx': i},
+                                      (lambda block_key_local=parent_block_key, cm_local=cm, now_local=parent_tx['now'], lt_local=parent_tx['lt']:
+                                          self._emulate_internal_message_recursive(block_key_local, cm_local, now_local, lt_local)),
+                                      lambda res, lst=nodes: lst.append(res) if res is not None else None,
+                                      kind='internal_emul',
+                                      parent_hex=parent_transaction_hash)
+                    else:
+                        extra_node = self._emulate_internal_message_recursive(parent_block_key, cm, parent_tx['now'],
+                                                                              parent_tx['lt'])
+                        if extra_node is not None:
+                            nodes.append(extra_node)
                 else:
                     # No cell to emulate; skip adding a node for this extra message.
                     pass
@@ -538,6 +634,10 @@ class TraceOrderedRunner:
                 'children': []
             })
             i += 1
+        try:
+            logger.debug(f"children_with_override parent={parent_transaction_hash} produced_nodes={len(nodes)} i_end={i} expected_len={len(expected)}")
+        except Exception:
+            pass
         return nodes
 
     # ---------- Traversal ----------
@@ -640,11 +740,21 @@ class TraceOrderedRunner:
                 if child_transaction_hash:
                     self.used_original_pairs.add((transaction_hash, expected_children_ordered[i]))
                     child_dest = m.get('dest').raw if m.get('dest') is not None else None
-                    child_node = self._process_tx(child_transaction_hash, out, visited, mh_b64, body_b64, opcode,
-                                                  child_dest,
-                                                  m.get('bounce'), m.get('bounced'))
-                    if child_node is not None:
-                        node['children'].append(child_node)
+                    if getattr(self, '_enqueue', None):
+                        # schedule exact child for next depth
+                        self._enqueue(self._current_depth + 1,
+                                      {'exact': True, 'override': False, 'extra': False, 'order_idx': i},
+                                      (lambda transaction_hash_local=child_transaction_hash, out_local=out, visited_local=visited, in_b64_local=mh_b64, body_b64_local=body_b64, opcode_local=opcode, dest_local=child_dest, bounce_local=m.get('bounce'), bounced_local=m.get('bounced'):
+                                          self._process_tx(transaction_hash_local, out_local, visited_local, in_b64_local, body_b64_local, opcode_local, dest_local, bounce_local, bounced_local)),
+                                      lambda res, n=node: n['children'].append(res) if res is not None else None,
+                                      kind='tx',
+                                      parent_hex=transaction_hash)
+                    else:
+                        child_node = self._process_tx(child_transaction_hash, out, visited, mh_b64, body_b64, opcode,
+                                                      child_dest,
+                                                      m.get('bounce'), m.get('bounced'))
+                        if child_node is not None:
+                            node['children'].append(child_node)
                 else:
                     expected_meta = (self.message_meta.get(transaction_hash, {}) or {}).get(mh_b64) or {}
                     dest = expected_meta.get('destination')
@@ -689,69 +799,145 @@ class TraceOrderedRunner:
                     # Compare destinations
                     emitted_dest_raw = m.get('dest').raw if m.get('dest') is not None else None
                     if child_transaction_hash and expected_dest_raw is not None and emitted_dest_raw == expected_dest_raw and 'cell' in m:
-                        # Emulate the real child tx but override its in_msg with the emitted one
-                        child_idx = self.tx_index.get(child_transaction_hash)
-                        if child_idx is not None:
-                            child_block_key, child_tx = child_idx
-                            # Prepare child account state
-                            child_tlb = Transaction().cell_unpack(child_tx['tx'], True)
-                            child_account_int = int(child_tlb.account_addr, 2)
-                            child_account_addr = Address(
-                                f"{child_block_key[0]}:{hex(child_account_int).upper()[2:].zfill(64)}")
-                            em_child, _ = self._get_emulators(child_block_key)
-                            child_state = (self.global_overrides.get(child_account_addr)
-                                           or self.account_states1[child_block_key].get(child_account_addr)
-                                           or self.default_initial_state.get(child_block_key, {}).get(child_account_addr)
-                                           or self._fetch_state_for_account(child_block_key, child_account_addr))
-                            self.account_states1[child_block_key][child_account_addr] = child_state
-                            # Run override emulation with child's timing
-                            tmp_out2, new_state_child, _ns2, child_out_msgs = emulate_tx_step_with_in_msg(
-                                self.blocks[child_block_key], child_tx, em_child, child_state, child_tx.get('after_state_em2', None), m['cell'], self.loglevel,
-                                self.color_schema, True
-                            )
-                            out.extend(tmp_out2)
-                            # Determine mode and update states; save to global_overrides only for new/error
-                            child_mode = self._summarize_mode(tmp_out2)
-                            self.account_states1[child_block_key][child_account_addr] = new_state_child
-                            if child_mode.get('mode') in ('new_transaction', 'error'):
-                                self.global_overrides[child_account_addr] = new_state_child
-                            # Build child node and process its children inline using produced out msgs
-                            child_node = {
-                                'tx_hash': hex_to_b64(child_transaction_hash),
-                                'in_msg_hash': mh_b64,
-                                'in_msg_body_hash': body_b64,
-                                'opcode': opcode,
-                                'destination': emitted_dest_raw,
-                                'bounce': m.get('bounce'),
-                                'bounced': m.get('bounced'),
-                                'mode': child_mode.get('mode'),
-                                **({'diff': child_mode['diff']} if 'diff' in child_mode else {}),
-                                **({'unchanged_emulator_tx_hash': child_mode['unchanged_emulator_tx_hash']} if 'unchanged_emulator_tx_hash' in child_mode else {}),
-                                **({'color_schema_log': child_mode['color_schema_log']} if 'color_schema_log' in child_mode else {}),
-                                **({'account_emulator_tx_hash_match': child_mode['account_emulator_tx_hash_match']} if 'account_emulator_tx_hash_match' in child_mode else {}),
-                                'children': []
-                            }
-                            # Process child's emitted messages against its expected children with override logic
-                            child_nodes = self._process_emitted_children_with_override(
-                                child_block_key,
-                                child_transaction_hash,
-                                child_tx,
-                                child_out_msgs.get('out_msgs', []),
-                                out,
-                                visited
-                            )
-                            child_node['children'].extend(child_nodes)
-                            node['children'].append(child_node)
-                            # Mark this expected child (by position) as used for comparison
+                        if getattr(self, '_enqueue', None):
+                            # Schedule override emulation as a closure task for next depth
+                            def run_override_tx(child_transaction_hash_local=child_transaction_hash,
+                                                m_local=m,
+                                                body_b64_local=body_b64,
+                                                opcode_local=opcode,
+                                                emitted_dest_raw_local=emitted_dest_raw,
+                                                out_local=out,
+                                                visited_local=visited,
+                                                order_idx_local=i):
+                                child_idx2 = self.tx_index.get(child_transaction_hash_local)
+                                if child_idx2 is None:
+                                    return None
+                                child_block_key2, child_tx2 = child_idx2
+                                child_tlb2 = Transaction().cell_unpack(child_tx2['tx'], True)
+                                child_account_int2 = int(child_tlb2.account_addr, 2)
+                                child_account_addr2 = Address(
+                                    f"{child_block_key2[0]}:{hex(child_account_int2).upper()[2:].zfill(64)}")
+                                em_child2, _ = self._get_emulators(child_block_key2)
+                                child_state2 = (self.global_overrides.get(child_account_addr2)
+                                                or self.account_states1[child_block_key2].get(child_account_addr2)
+                                                or self.default_initial_state.get(child_block_key2, {}).get(child_account_addr2)
+                                                or self._fetch_state_for_account(child_block_key2, child_account_addr2))
+                                self.account_states1[child_block_key2][child_account_addr2] = child_state2
+                                tmp_outY, new_state_child2, _nsY, child_out_msgs2 = emulate_tx_step_with_in_msg(
+                                    self.blocks[child_block_key2], child_tx2, em_child2, child_state2, child_tx2.get('after_state_em2', None), m_local['cell'], self.loglevel,
+                                    self.color_schema, True
+                                )
+                                out_local.extend(tmp_outY)
+                                child_mode2 = self._summarize_mode(tmp_outY)
+                                self.account_states1[child_block_key2][child_account_addr2] = new_state_child2
+                                if child_mode2.get('mode') in ('new_transaction', 'error'):
+                                    self.global_overrides[child_account_addr2] = new_state_child2
+                                child_node2 = {
+                                    'tx_hash': hex_to_b64(child_transaction_hash_local),
+                                    'in_msg_hash': hex_to_b64(m_local['msg_hash']),
+                                    'in_msg_body_hash': body_b64_local,
+                                    'opcode': opcode_local,
+                                    'destination': emitted_dest_raw_local,
+                                    'bounce': m_local.get('bounce'),
+                                    'bounced': m_local.get('bounced'),
+                                    'mode': child_mode2.get('mode'),
+                                    **({'diff': child_mode2['diff']} if 'diff' in child_mode2 else {}),
+                                    **({'unchanged_emulator_tx_hash': child_mode2['unchanged_emulator_tx_hash']} if 'unchanged_emulator_tx_hash' in child_mode2 else {}),
+                                    **({'color_schema_log': child_mode2['color_schema_log']} if 'color_schema_log' in child_mode2 else {}),
+                                    **({'account_emulator_tx_hash_match': child_mode2['account_emulator_tx_hash_match']} if 'account_emulator_tx_hash_match' in child_mode2 else {}),
+                                    'children': []
+                                }
+                                # Schedule grandchildren processing via _process_emitted_children_with_override for next depth
+                                self._enqueue(self._current_depth + 1,
+                                              {'exact': True, 'override': False, 'extra': False, 'order_idx': order_idx_local},
+                                              (lambda parent_block_key_local=child_block_key2, parent_hex_local=b64_to_hex(child_node2['tx_hash']), parent_tx_local=child_tx2, emitted_list_local=(child_out_msgs2 or {}).get('out_msgs', []), out_local2=out_local, visited_local2=visited_local:
+                                                  self._process_emitted_children_with_override(parent_block_key_local, parent_hex_local, parent_tx_local, emitted_list_local, out_local2, visited_local2)),
+                                              lambda lst, n=child_node2: n['children'].extend(lst or []),
+                                              kind='children_with_override',
+                                              parent_hex=child_transaction_hash_local)
+                                return child_node2
+                            self._enqueue(self._current_depth + 1,
+                                          {'exact': False, 'override': True, 'extra': False, 'order_idx': i},
+                                          run_override_tx,
+                                          lambda res, n=node: n['children'].append(res) if res is not None else None,
+                                          kind='tx',
+                                          parent_hex=transaction_hash)
                             self.used_original_pairs.add((transaction_hash, expected_in_b64))
-                            # We consumed one expected child position
                             i += 1
                             continue
+                        else:
+                            # Emulate the real child tx but override its in_msg with the emitted one
+                            child_idx = self.tx_index.get(child_transaction_hash)
+                            if child_idx is not None:
+                                child_block_key, child_tx = child_idx
+                                # Prepare child account state
+                                child_tlb = Transaction().cell_unpack(child_tx['tx'], True)
+                                child_account_int = int(child_tlb.account_addr, 2)
+                                child_account_addr = Address(
+                                    f"{child_block_key[0]}:{hex(child_account_int).upper()[2:].zfill(64)}")
+                                em_child, _ = self._get_emulators(child_block_key)
+                                child_state = (self.global_overrides.get(child_account_addr)
+                                               or self.account_states1[child_block_key].get(child_account_addr)
+                                               or self.default_initial_state.get(child_block_key, {}).get(child_account_addr)
+                                               or self._fetch_state_for_account(child_block_key, child_account_addr))
+                                self.account_states1[child_block_key][child_account_addr] = child_state
+                                # Run override emulation with child's timing
+                                tmp_out2, new_state_child, _ns2, child_out_msgs = emulate_tx_step_with_in_msg(
+                                    self.blocks[child_block_key], child_tx, em_child, child_state, child_tx.get('after_state_em2', None), m['cell'], self.loglevel,
+                                    self.color_schema, True
+                                )
+                                out.extend(tmp_out2)
+                                # Determine mode and update states; save to global_overrides only for new/error
+                                child_mode = self._summarize_mode(tmp_out2)
+                                self.account_states1[child_block_key][child_account_addr] = new_state_child
+                                if child_mode.get('mode') in ('new_transaction', 'error'):
+                                    self.global_overrides[child_account_addr] = new_state_child
+                                # Build child node and process its children inline using produced out msgs
+                                child_node = {
+                                    'tx_hash': hex_to_b64(child_transaction_hash),
+                                    'in_msg_hash': mh_b64,
+                                    'in_msg_body_hash': body_b64,
+                                    'opcode': opcode,
+                                    'destination': emitted_dest_raw,
+                                    'bounce': m.get('bounce'),
+                                    'bounced': m.get('bounced'),
+                                    'mode': child_mode.get('mode'),
+                                    **({'diff': child_mode['diff']} if 'diff' in child_mode else {}),
+                                    **({'unchanged_emulator_tx_hash': child_mode['unchanged_emulator_tx_hash']} if 'unchanged_emulator_tx_hash' in child_mode else {}),
+                                    **({'color_schema_log': child_mode['color_schema_log']} if 'color_schema_log' in child_mode else {}),
+                                    **({'account_emulator_tx_hash_match': child_mode['account_emulator_tx_hash_match']} if 'account_emulator_tx_hash_match' in child_mode else {}),
+                                    'children': []
+                                }
+                                # Process child's emitted messages against its expected children with override logic
+                                child_nodes = self._process_emitted_children_with_override(
+                                    child_block_key,
+                                    child_transaction_hash,
+                                    child_tx,
+                                    child_out_msgs.get('out_msgs', []),
+                                    out,
+                                    visited
+                                )
+                                child_node['children'].extend(child_nodes)
+                                node['children'].append(child_node)
+                                # Mark this expected child (by position) as used for comparison
+                                self.used_original_pairs.add((transaction_hash, expected_in_b64))
+                                # We consumed one expected child position
+                                i += 1
+                                continue
                 # Fallback to previous behavior: treat as extra
                 if m is not None and 'cell' in m:
-                    child_node = self._emulate_internal_message_recursive(block_key, m, tx['now'], tx['lt'])
-                    if child_node is not None:
-                        node['children'].append(child_node)
+                    if getattr(self, '_enqueue', None):
+                        self._enqueue(self._current_depth + 1,
+                                      {'exact': False, 'override': False, 'extra': True, 'order_idx': i},
+                                      (lambda block_key_local=block_key, m_local=m, now_local=tx['now'], lt_local=tx['lt']:
+                                          self._emulate_internal_message_recursive(block_key_local, m_local, now_local, lt_local)),
+                                      lambda res, n=node: n['children'].append(res) if res is not None else None,
+                                      kind='internal_emul',
+                                      parent_hex=transaction_hash)
+                    else:
+                        child_node = self._emulate_internal_message_recursive(block_key, m, tx['now'], tx['lt'])
+                        if child_node is not None:
+                            node['children'].append(child_node)
                 else:
                     # No cell to emulate; skip adding a node for this extra message.
                     pass
@@ -783,6 +969,10 @@ class TraceOrderedRunner:
             }
             node['children'].append(missed_node3)
             i += 1
+        try:
+            logger.debug(f"_process_tx tx={transaction_hash} emitted={len(emitted_list)} expected={len(expected_children_ordered)} node_mode={node.get('mode')}")
+        except Exception:
+            pass
         return node
 
     def _collect_in_hashes(self, node: Optional[Dict[str, Any]]) -> Set[str]:
@@ -864,18 +1054,109 @@ class TraceOrderedRunner:
         except Exception:
             pass
 
-        emu_root = self._process_tx(
-            root_transaction_hash,
-            out,
-            visited=set(),
-            in_msg_b64=root_in,
-            in_msg_body_b64=root_body,
-            in_opcode=root_opcode,
-            in_destination=root_destination,
-            in_bounce=root_bounce,
-            in_bounced=root_bounced)
+        # By-depth (level-order) run scheduler replacing DFS.
+        # We will store curried calls to _process_tx, _process_emitted_children_with_override, and _emulate_internal_message_recursive
+        # grouped by depth. For ordering within a depth, we sort by original trace order rules:
+        # 1) exact in_msg_hash match first; 2) position+destination override; 3) extras last.
+        visited: Set[str] = set()
+        depth_map: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+        emu_root_holder: List[Optional[Dict[str, Any]]] = [None]
 
-        self.emulated_trace_root = emu_root
+        # Enqueue function available to inner methods
+        def enqueue(depth: int, meta: Dict[str, Any], func, on_result, kind: str, parent_hex: Optional[str]):
+            try:
+                logger.debug(f"ENQUEUE d={depth} kind={kind} parent={parent_hex} meta={meta}")
+            except Exception:
+                pass
+            item = {
+                'meta': meta,
+                'func': func,
+                'on_result': on_result,
+                'kind': kind,
+                'parent_hex': parent_hex
+            }
+            # For children_with_override we must attach results after the next depth runs its tasks
+            if kind == 'children_with_override':
+                item['defer_attach_depth'] = depth + 1
+            depth_map[depth].append(item)
+
+        # enable by-depth mode for inner functions
+        self._enqueue = enqueue
+        self._current_depth = 0
+
+        # Seed root _process_tx as depth 0 task
+        self._enqueue(0,
+                      {'exact': True, 'override': False, 'extra': False, 'order_idx': 0},
+                      (lambda transaction_hash_local=root_transaction_hash, out_local=out, visited_local=visited, in_b64_local=root_in, body_b64_local=root_body, opcode_local=root_opcode, dest_local=root_destination, bounce_local=root_bounce, bounced_local=root_bounced:
+                          self._process_tx(transaction_hash_local, out_local, visited_local, in_b64_local, body_b64_local, opcode_local, dest_local, bounce_local, bounced_local)),
+                      lambda res: emu_root_holder.__setitem__(0, res),
+                      kind='tx',
+                      parent_hex=None)
+
+        # Execute depth by depth
+        cur_depth = 0
+        deferred_by_depth: Dict[int, List[Tuple[Any, Any]]] = defaultdict(list)
+        while cur_depth in depth_map:
+            items = depth_map[cur_depth]
+            # Sort by meta: extras last; exact first; override next; then by order index
+            def sort_key(it):
+                meta = it.get('meta') or {}
+                extra = 1 if meta.get('extra') else 0
+                # exact True -> 0, override True -> 1, else -> 2 (extras already pushed to end by extra flag)
+                if meta.get('exact'):
+                    cls = 0
+                elif meta.get('override'):
+                    cls = 1
+                else:
+                    cls = 2
+                pos = meta.get('order_idx') if isinstance(meta.get('order_idx'), int) else 1_000_000
+                return (extra, cls, pos)
+            items.sort(key=sort_key)
+
+            # Prepare for next depth accumulation
+            self._current_depth = cur_depth
+            next_depth = cur_depth + 1
+            # no local deferred; we keep them in deferred_by_depth to persist across depths
+            # Execute all items at this depth
+            for it in items:
+                func = it.get('func')
+                res = None
+                if callable(func):
+                    res = func()
+                else:
+                    # Treat precomputed objects (dict/list/None) as already computed result; log for diagnostics
+                    res = func
+                    try:
+                        logger.error(f"Non-callable scheduled func encountered at depth {self._current_depth}: kind={it.get('kind')} parent={it.get('parent_hex')} type={type(func).__name__}")
+                    except Exception:
+                        pass
+                cb = it.get('on_result')
+                if cb:
+                    # callbacks accept either (res) or (res, ...); support 1-arg lambdas used above
+                    try:
+                        logger.debug(f"CALLBACK d={self._current_depth} kind={it.get('kind')} parent={it.get('parent_hex')} res_type={type(res).__name__}")
+                    except Exception:
+                        pass
+                    # Defer attaching results from children_with_override until the next depth is executed
+                    defer_to = it.get('defer_attach_depth')
+                    if isinstance(defer_to, int):
+                        deferred_by_depth[defer_to].append((cb, res))
+                    else:
+                        try:
+                            cb(res)
+                        except TypeError:
+                            # Some callbacks capture additional positional args via default bindings
+                            cb(res)
+            # Now that all tasks at this depth executed, process any deferred attachments targeting this depth
+            to_run = deferred_by_depth.pop(cur_depth, [])
+            for cb_func, res_val in to_run:
+                try:
+                    cb_func(res_val)
+                except TypeError:
+                    cb_func(res_val)
+            cur_depth = next_depth
+
+        self.emulated_trace_root = emu_root_holder[0]
         # Prepare not_presented list by a second recursive pass
         present_hashes = self._collect_in_hashes(self.emulated_trace_root)
         not_presented = self._collect_not_presented(self.original_trace_root, present_hashes)
