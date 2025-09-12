@@ -1037,7 +1037,7 @@ class TraceOrderedRunner:
 
         # Enqueue function available to inner methods
         def enqueue(depth: int, meta: Dict[str, Any], func, on_result, kind: str, parent_hex: Optional[str]):
-            # logger.debug(f"ENQUEUE d={depth} kind={kind} parent={parent_hex} meta={meta}")
+            logger.debug(f"ENQUEUE d={depth} kind={kind} parent={parent_hex} meta={meta}")
             item = {
                 'meta': meta,
                 'func': func,
@@ -1107,7 +1107,7 @@ class TraceOrderedRunner:
                 cb = it.get('on_result')
                 if cb:
                     # callbacks accept either (res) or (res, ...); support 1-arg lambdas used above
-                    # logger.debug(f"CALLBACK d={self._current_depth} kind={it.get('kind')} parent={it.get('parent_hex')} res_type={type(res).__name__}")
+                    logger.debug(f"CALLBACK d={self._current_depth} kind={it.get('kind')} parent={it.get('parent_hex')} res_type={type(res).__name__}")
                     # Defer attaching results from children_with_override until the next depth is executed
                     defer_to = it.get('defer_attach_depth')
                     if isinstance(defer_to, int):
