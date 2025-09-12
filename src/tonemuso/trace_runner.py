@@ -1,6 +1,7 @@
 # Copyright (c) 2024 Disintar LLP Licensed under the Apache License Version 2.0
 from typing import Dict, Any, List, Tuple, Optional, Set
 from collections import defaultdict, OrderedDict
+from toolz import curry
 
 from tonpy import Cell, LiteClient, begin_cell, BlockId, Address
 from tonpy.tvm.not_native.emulator_extern import EmulatorExtern
@@ -180,8 +181,11 @@ class TraceOrderedRunner:
             in_bounced = in_msg.get('bounced')
             tx_lt = tx_info.get('lt')
             # Normalize to Address(...).raw format if available
-            if isinstance(destination, str):
-                destination = Address(destination).raw
+            try:
+                if isinstance(destination, str):
+                    destination = Address(destination).raw
+            except Exception:
+                pass
         children_nodes = []
         for ch in (node.get('children') or []):
             if isinstance(ch, dict):
@@ -436,8 +440,11 @@ class TraceOrderedRunner:
                 else:
                     expected_meta = (self.message_meta.get(parent_transaction_hash, {}) or {}).get(cm_b64) or {}
                     dest = expected_meta.get('destination')
-                    if isinstance(dest, str):
-                        dest = Address(dest).raw
+                    try:
+                        if isinstance(dest, str):
+                            dest = Address(dest).raw
+                    except Exception:
+                        pass
                     nodes.append({
                         'tx_hash': None,
                         'in_msg_hash': cm_b64,
@@ -464,9 +471,10 @@ class TraceOrderedRunner:
                         child_info = (self.original_tx_details or {}).get(child_b64) or {}
                         in_msg_info = child_info.get('in_msg') or {}
                         expected_dest = in_msg_info.get('destination')
-                        if isinstance(expected_dest, str):
-                            expected_dest_raw = Address(expected_dest).raw
-                        else:
+                        try:
+                            if isinstance(expected_dest, str):
+                                expected_dest_raw = Address(expected_dest).raw
+                        except Exception:
                             expected_dest_raw = expected_dest
                     emitted_dest_raw = cm.get('dest').raw if cm.get('dest') is not None else None
                     if child_transaction_hash and expected_dest_raw is not None and emitted_dest_raw == expected_dest_raw and 'cell' in cm:
@@ -606,8 +614,11 @@ class TraceOrderedRunner:
             miss_b64 = expected[i]
             exp_meta = (self.message_meta.get(parent_transaction_hash, {}) or {}).get(miss_b64) or {}
             dest2 = exp_meta.get('destination')
-            if isinstance(dest2, str):
-                dest2 = Address(dest2).raw
+            try:
+                if isinstance(dest2, str):
+                    dest2 = Address(dest2).raw
+            except Exception:
+                pass
             nodes.append({
                 'tx_hash': None,
                 'in_msg_hash': miss_b64,
@@ -623,7 +634,10 @@ class TraceOrderedRunner:
                 'children': []
             })
             i += 1
-        logger.debug(f"children_with_override parent={parent_transaction_hash} produced_nodes={len(nodes)} i_end={i} expected_len={len(expected)}")
+        try:
+            logger.debug(f"children_with_override parent={parent_transaction_hash} produced_nodes={len(nodes)} i_end={i} expected_len={len(expected)}")
+        except Exception:
+            pass
         return nodes
 
     # ---------- Traversal ----------
@@ -744,8 +758,11 @@ class TraceOrderedRunner:
                 else:
                     expected_meta = (self.message_meta.get(transaction_hash, {}) or {}).get(mh_b64) or {}
                     dest = expected_meta.get('destination')
-                    if isinstance(dest, str):
-                        dest = Address(dest).raw
+                    try:
+                        if isinstance(dest, str):
+                            dest = Address(dest).raw
+                    except Exception:
+                        pass
                     missed_node = {
                         'tx_hash': None,
                         'in_msg_hash': mh_b64,
@@ -774,9 +791,10 @@ class TraceOrderedRunner:
                         child_info = (self.original_tx_details or {}).get(child_b64) or {}
                         in_msg_info = child_info.get('in_msg') or {}
                         expected_dest = in_msg_info.get('destination')
-                        if isinstance(expected_dest, str):
-                            expected_dest_raw = Address(expected_dest).raw
-                        else:
+                        try:
+                            if isinstance(expected_dest, str):
+                                expected_dest_raw = Address(expected_dest).raw
+                        except Exception:
                             expected_dest_raw = expected_dest
                     # Compare destinations
                     emitted_dest_raw = m.get('dest').raw if m.get('dest') is not None else None
@@ -928,8 +946,11 @@ class TraceOrderedRunner:
             missing_b64 = expected_children_ordered[i]
             expected_meta = (self.message_meta.get(transaction_hash, {}) or {}).get(missing_b64) or {}
             dest3 = expected_meta.get('destination')
-            if isinstance(dest3, str):
-                dest3 = Address(dest3).raw
+            try:
+                if isinstance(dest3, str):
+                    dest3 = Address(dest3).raw
+            except Exception:
+                pass
             original_child_transaction_hash = link_map.get(missing_b64)
             orig_child_b64 = hex_to_b64(original_child_transaction_hash) if original_child_transaction_hash else None
             missed_node3 = {
@@ -948,7 +969,10 @@ class TraceOrderedRunner:
             }
             node['children'].append(missed_node3)
             i += 1
-        logger.debug(f"_process_tx tx={transaction_hash} emitted={len(emitted_list)} expected={len(expected_children_ordered)} node_mode={node.get('mode')}")
+        try:
+            logger.debug(f"_process_tx tx={transaction_hash} emitted={len(emitted_list)} expected={len(expected_children_ordered)} node_mode={node.get('mode')}")
+        except Exception:
+            pass
         return node
 
     def _collect_in_hashes(self, node: Optional[Dict[str, Any]]) -> Set[str]:
@@ -1024,8 +1048,11 @@ class TraceOrderedRunner:
         root_destination = root_in_msg.get('destination')
         root_bounce = root_in_msg.get('bounce')
         root_bounced = root_in_msg.get('bounced')
-        if isinstance(root_destination, str):
-            root_destination = Address(root_destination).raw
+        try:
+            if isinstance(root_destination, str):
+                root_destination = Address(root_destination).raw
+        except Exception:
+            pass
 
         # By-depth (level-order) run scheduler replacing DFS.
         # We will store curried calls to _process_tx, _process_emitted_children_with_override, and _emulate_internal_message_recursive
@@ -1037,7 +1064,10 @@ class TraceOrderedRunner:
 
         # Enqueue function available to inner methods
         def enqueue(depth: int, meta: Dict[str, Any], func, on_result, kind: str, parent_hex: Optional[str]):
-            logger.debug(f"ENQUEUE d={depth} kind={kind} parent={parent_hex} meta={meta}")
+            try:
+                logger.debug(f"ENQUEUE d={depth} kind={kind} parent={parent_hex} meta={meta}")
+            except Exception:
+                pass
             item = {
                 'meta': meta,
                 'func': func,
@@ -1068,26 +1098,19 @@ class TraceOrderedRunner:
         deferred_by_depth: Dict[int, List[Tuple[Any, Any]]] = defaultdict(list)
         while cur_depth in depth_map:
             items = depth_map[cur_depth]
-            # Sort to ensure: all items with original order_idx (from original trace) come first in that exact order,
-            # then all new/extra txs. Within the 'new' group, keep previous priorities (exact, override, others).
+            # Sort by meta: extras last; exact first; override next; then by order index
             def sort_key(it):
                 meta = it.get('meta') or {}
-                has_pos = isinstance(meta.get('order_idx'), int)
-                pos = meta.get('order_idx') if has_pos else 1_000_000
-                # Group 0: items tied to original trace (have integer order_idx)
-                group = 0 if has_pos else 1
-                # Within group 1 (new transactions), preserve previous class priority
+                extra = 1 if meta.get('extra') else 0
+                # exact True -> 0, override True -> 1, else -> 2 (extras already pushed to end by extra flag)
                 if meta.get('exact'):
                     cls = 0
                 elif meta.get('override'):
                     cls = 1
                 else:
                     cls = 2
-                # Extras are considered new by definition (group 1). Ensure they sort after non-extra within new.
-                extra_flag = 1 if meta.get('extra') else 0
-                # Final key: group first, then position (for group 0), then class and extra within group 1.
-                # For group 0, cls/extra_flag don't matter as pos decides. For group 1, pos is large so cls/extras decide.
-                return (group, pos, cls, extra_flag)
+                pos = meta.get('order_idx') if isinstance(meta.get('order_idx'), int) else 1_000_000
+                return (extra, cls, pos)
             items.sort(key=sort_key)
 
             # Prepare for next depth accumulation
@@ -1103,11 +1126,17 @@ class TraceOrderedRunner:
                 else:
                     # Treat precomputed objects (dict/list/None) as already computed result; log for diagnostics
                     res = func
-                    logger.error(f"Non-callable scheduled func encountered at depth {self._current_depth}: kind={it.get('kind')} parent={it.get('parent_hex')} type={type(func).__name__}")
+                    try:
+                        logger.error(f"Non-callable scheduled func encountered at depth {self._current_depth}: kind={it.get('kind')} parent={it.get('parent_hex')} type={type(func).__name__}")
+                    except Exception:
+                        pass
                 cb = it.get('on_result')
                 if cb:
                     # callbacks accept either (res) or (res, ...); support 1-arg lambdas used above
-                    logger.debug(f"CALLBACK d={self._current_depth} kind={it.get('kind')} parent={it.get('parent_hex')} res_type={type(res).__name__}")
+                    try:
+                        logger.debug(f"CALLBACK d={self._current_depth} kind={it.get('kind')} parent={it.get('parent_hex')} res_type={type(res).__name__}")
+                    except Exception:
+                        pass
                     # Defer attaching results from children_with_override until the next depth is executed
                     defer_to = it.get('defer_attach_depth')
                     if isinstance(defer_to, int):

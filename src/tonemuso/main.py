@@ -260,7 +260,10 @@ def _process_one_trace_worker(args):
         runner_local.run(tx_order_list or [])
         return runner_local.failed_traces or []
     except Exception as e:
-        logger.error(f"Error processing trace #{args[0]} in worker: {e}")
+        try:
+            logger.error(f"Error processing trace #{args[0]} in worker: {e}")
+        except Exception:
+            pass
         return []
 
 
