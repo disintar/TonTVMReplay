@@ -167,7 +167,7 @@ class TxStepEmulator:
             diff, address = get_diff(tx['tx'], self.em.transaction.to_cell())
 
             unchanged_emulator_tx_hash = self.em2.transaction.get_hash()
-            sa_diff = get_shard_account_diff(self.em.account.to_cell(), self.em2.account.to_cell())
+            sa_diff = get_shard_account_diff(self.em2.account.to_cell(), self.em.account.to_cell())
 
 
             account_diff_dict: Optional[Dict[str, Any]] = None
