@@ -377,16 +377,16 @@ class TraceOrderedRunner:
                 # Accumulate next contexts (each carries its own gc_node)
                 next_contexts_all.extend(next_contexts)
 
-            # Sort next layer contexts by their candidates' original_order_idx (min across list)
-            def ctx_key(ctx_item):
-                _, _txh, _tx, _cands, _pnode = ctx_item
-                INF = 10 ** 18
-                if not _cands:
-                    return INF
-
-                return min(int(c.original_order_idx) if c.original_order_idx is not None else INF for c in _cands)
-
-            next_contexts_all.sort(key=ctx_key)
+            # # Sort next layer contexts by their candidates' original_order_idx (min across list)
+            # def ctx_key(ctx_item):
+            #     _, _txh, _tx, _cands, _pnode = ctx_item
+            #     INF = 10 ** 18
+            #     if not _cands:
+            #         return INF
+            #
+            #     return min(int(c.original_order_idx) if c.original_order_idx is not None else INF for c in _cands)
+            #
+            # next_contexts_all.sort(key=ctx_key)
             worklist = next_contexts_all
         return node
 
