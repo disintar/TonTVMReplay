@@ -10,6 +10,7 @@ from tonpy.autogen.block import Transaction
 from tonpy.tvm.not_native.emulator_extern import EmulatorExtern
 from tonpy import Address
 from loguru import logger
+from tqdm import tqdm
 
 from tonemuso.utils import b64_to_hex
 from tonemuso.emulation import TxStepEmulator, init_emulators
@@ -83,7 +84,7 @@ def collect_raw(data, trace_tx_hashes_hex: Set[str], config_override: dict = Non
     tx_objs: List[TxRecord] = []
     buffer: List[TxRecord] = []  # holds non-trace txs until the next in-trace tx
     use_buffer = bool(trace_tx_hashes_hex) and len(trace_tx_hashes_hex) > 0
-    for t in txs:
+    for t in tqdm(txs, desc="Pre-emulate data"):
         if isinstance(t, dict):
             rec = TxRecord(tx=t['tx'], lt=t['lt'], now=t['now'], is_tock=t['is_tock'])
         else:

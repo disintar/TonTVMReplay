@@ -225,10 +225,22 @@ class EmittedMessageProcessor:
                 gc_account_int = int(gc_tlb.account_addr, 2)
                 gc_account_addr = Address(f"{gc_block_key[0]}:{hex(gc_account_int).upper()[2:].zfill(64)}")
                 emu, emu2 = self.r._get_emulators(gc_block_key)
-                gc_state = (self.r.global_overrides.get(gc_account_addr)
-                            or self.r.account_states1[gc_block_key].get(gc_account_addr)
-                            or self.r.default_initial_state.get(gc_block_key, {}).get(gc_account_addr)
-                            or self.r._fetch_state_for_account(gc_block_key, gc_account_addr))
+                # Determine BEFORE state for child and record source for diagnostics
+                gc_state_source = None
+                if child_transaction_hash in self.r.before_states:
+                    gc_state = self.r.before_states[child_transaction_hash]
+                    gc_state_source = 'before_states'
+                elif gc_account_addr in self.r.account_states1[gc_block_key]:
+                    gc_state = self.r.account_states1[gc_block_key][gc_account_addr]
+                    gc_state_source = 'account_states1'
+                else:
+                    dflt2 = (self.r.default_initial_state.get(gc_block_key, {}) or {}).get(gc_account_addr)
+                    if dflt2 is not None:
+                        gc_state = dflt2
+                        gc_state_source = 'default_initial_state'
+                    else:
+                        gc_state = self.r._fetch_state_for_account(gc_block_key, gc_account_addr)
+                        gc_state_source = 'fetched_liteclient' if gc_state is not None else 'none'
                 self.r.account_states1[gc_block_key][gc_account_addr] = gc_state
                 # Pre-apply buffered txs (if any) to account state for this account in this block
                 gc_state, buf_count = self._emulate_buffer_txs(
@@ -261,6 +273,10 @@ class EmittedMessageProcessor:
                 if mode.get('mode') in ('new_transaction', 'error'):
                     self.r.global_overrides[gc_account_addr] = new_state_gc
                 gc_node = gc_node_obj.to_dict()
+                # Annotate diagnostics: where BEFORE state was taken from and which account it was
+
+                gc_node['account_state_source'] = gc_state_source
+                gc_node['account_address'] = str(gc_account_addr)
                 # Assign emulation order for this matched child node
                 gc_node['emulation_order'] = self.r._next_emulation_order()
                 # Classify grandchildren for next layer (do not recurse here)

@@ -6,6 +6,7 @@ from tonpy import Cell, LiteClient, begin_cell, BlockId, Address
 from tonpy.tvm.not_native.emulator_extern import EmulatorExtern
 from tonpy.autogen.block import Transaction, Block, BlockInfo
 from loguru import logger
+from tqdm import tqdm
 
 from tonemuso.emulation import init_emulators, TxStepEmulator
 from tonemuso.emitted_processor import EmittedMessageProcessor, EmittedChildCandidate
@@ -100,12 +101,27 @@ class TraceOrderedRunner:
         # Build raw indices for quick access (from preindexed or raw chunks)
         if preindexed is not None:
             try:
-                self.tx_index = OrderedDict(preindexed.get('tx_index') or {})
+                # Copy indices into per-runner containers (avoid sharing mutable maps across traces)
+                # Rebuild tx_index with per-runner TxRecord clones to avoid accidental mutation sharing
+                self.tx_index = OrderedDict()
+                for h, pair in (preindexed.get('tx_index') or {}).items():
+                    bk, tx = pair
+                    # Clone TxRecord shallowly (do not carry before_txs buffer across runs)
+                    tx_cloned = TxRecord(tx=tx.tx, lt=tx.lt, now=tx.now, is_tock=tx.is_tock)
+                    tx_cloned.before_state_em2 = tx.before_state_em2
+                    tx_cloned.after_state_em2 = tx.after_state_em2
+                    tx_cloned.unchanged_emulator_tx_hash = tx.unchanged_emulator_tx_hash
+                    self.tx_index[h] = (bk, tx_cloned)
                 self.blocks = OrderedDict(preindexed.get('blocks') or {})
                 # Do not pass emulators
                 self.account_states1 = defaultdict(OrderedDict)
                 # Default initial state per block per account (for lazy seeding)
-                self.default_initial_state = defaultdict(OrderedDict, preindexed.get('default_initial_state') or {})
+                # Build a fresh defaultdict with shallow-copied OrderedDict values to avoid cross-trace mutations
+                self.default_initial_state = defaultdict(OrderedDict)
+                for bk, addr_map in (preindexed.get('default_initial_state') or {}).items():
+                    # Shallow copy mapping; Cells are treated as values and not mutated by emulators
+                    self.default_initial_state[bk] = OrderedDict(addr_map)
+                # BEFORE states (per-tx) – copy keys to avoid accidental mutation sharing
                 self.before_states = OrderedDict(preindexed.get('before_states') or {})
             except Exception as e:
                 logger.error(f"Failed to apply preindexed data; falling back to raw indexing: {e}")
@@ -287,8 +303,23 @@ class TraceOrderedRunner:
         account_addr = Address(f"{block_key[0]}:{hex(account_address).upper()[2:].zfill(64)}")
 
         em, em2 = self._get_emulators(block_key)
-        # Determine BEFORE state: global override takes precedence; else mandatory before_state_em2 recorded during collection
-        state1 = self.global_overrides.get(account_addr) or self.before_states[transaction_hash]
+        # Determine BEFORE state and record its source for diagnostics in failed_traces.json
+        state1 = None
+        state1_source = None
+        if transaction_hash in self.before_states:
+            state1 = self.before_states[transaction_hash]
+            state1_source = 'before_states'
+        elif account_addr in self.account_states1[block_key]:
+            state1 = self.account_states1[block_key][account_addr]
+            state1_source = 'account_states1'
+        else:
+            dflt = (self.default_initial_state.get(block_key, {}) or {}).get(account_addr)
+            if dflt is not None:
+                state1 = dflt
+                state1_source = 'default_initial_state'
+            else:
+                state1 = self._fetch_state_for_account(block_key, account_addr)
+                state1_source = 'fetched_liteclient' if state1 is not None else 'none'
         # Sync the stored account state to the chosen BEFORE state
         self.account_states1[block_key][account_addr] = state1
 
@@ -311,6 +342,10 @@ class TraceOrderedRunner:
             in_msg=in_msg_ref
         )
         node = node_obj.to_dict()
+        # Annotate diagnostics: where BEFORE state was taken from and which account it was
+
+        node['account_state_source'] = state1_source
+        node['account_address'] = str(account_addr)
         # Assign emulation order for the root node
         node['emulation_order'] = self._next_emulation_order()
         # Depth for root
@@ -394,6 +429,15 @@ class TraceOrderedRunner:
         return missing
 
     def run(self, tx_order_hex_upper: List[str]) -> List[Dict[str, Any]]:
+        # Reset per-run caches to ensure full isolation between traces when a runner is reused
+        self.used_original_pairs = set()
+        self.global_overrides = OrderedDict()
+        self.emulation_counter = 0
+        self.block_emulators = OrderedDict()
+        self.account_states1 = defaultdict(OrderedDict)
+        self.failed_traces = []
+        self.emulated_trace_root = None
+
         out: List[Dict[str, Any]] = []
         order_list = tx_order_hex_upper or self.tx_order_hex_upper
         if not order_list:
