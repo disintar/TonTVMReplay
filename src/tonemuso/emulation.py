@@ -1,22 +1,20 @@
 # Copyright (c) 2024 Disintar LLP Licensed under the Apache License Version 2.0
 from typing import List, Optional, Tuple, Dict, Any
 
-from tonpy import Cell, VmDict, Address, CellSlice
+from tonpy import Cell, VmDict, Address
 from tonpy.tvm.not_native.emulator_extern import EmulatorExtern
 from tonpy.autogen.block import Transaction, MessageAny
 from loguru import logger
-import os
 
 from tonemuso.diff import get_diff, get_colored_diff, make_json_dumpable, get_shard_account_diff
-from tonemuso.utils import hex_to_b64
 
 
-def init_emulators(block: Dict[str, Any], config_override: Dict[str, Any] = None) -> Tuple[
-    EmulatorExtern, Optional[EmulatorExtern]]:
+def init_emulators(block: Dict[str, Any], config_override: Dict[str, Any], emulator_path: str,
+                   emulator_unchanged_path: str) -> Tuple[EmulatorExtern, EmulatorExtern]:
     """
-    Initialize primary (and optional secondary) emulators for a given block using
+    Initialize primary and secondary emulators for a given block using
     the same logic as in main.process_blocks.
-    Returns (em, em2_or_None)
+    Returns (em, em2)
     """
     # Base config from block key_block (no overrides)
     base_config: VmDict = VmDict(32, False, block['key_block']['config'])
@@ -28,7 +26,7 @@ def init_emulators(block: Dict[str, Any], config_override: Dict[str, Any] = None
         for param in config_override:
             config.set(int(param), begin_cell().store_ref(Cell(config_override[param])).end_cell().begin_parse())
 
-    em = EmulatorExtern(os.getenv("EMULATOR_PATH"), config)
+    em = EmulatorExtern(emulator_path, config)
     em.set_rand_seed(block['rand_seed'])
 
     prev_block_data = [list(reversed(block['prev_block_data'][1])),  # prev 16
@@ -37,13 +35,10 @@ def init_emulators(block: Dict[str, Any], config_override: Dict[str, Any] = None
     em.set_prev_blocks_info(prev_block_data)
     em.set_libs(VmDict(256, False, cell_root=Cell(block['libs'])))
 
-    em2 = None
-    unchanged_path = os.getenv("EMULATOR_UNCHANGED_PATH", "")
-    if unchanged_path:
-        em2 = EmulatorExtern(unchanged_path, base_config)
-        em2.set_rand_seed(block['rand_seed'])
-        em2.set_prev_blocks_info(prev_block_data)
-        em2.set_libs(VmDict(256, False, cell_root=Cell(block['libs'])))
+    em2 = EmulatorExtern(emulator_unchanged_path, base_config)
+    em2.set_rand_seed(block['rand_seed'])
+    em2.set_prev_blocks_info(prev_block_data)
+    em2.set_libs(VmDict(256, False, cell_root=Cell(block['libs'])))
 
     return em, em2
 
@@ -93,381 +88,192 @@ def extract_message_info(tx: Cell):
     return answer
 
 
-def emulate_tx_step(block: Dict[str, Any],
-                    tx: Dict[str, Any],
-                    em: EmulatorExtern,
-                    em2: Optional[EmulatorExtern],
-                    account_state_em1: Cell,
-                    account_state_em2: Optional[Cell],
-                    loglevel: int,
-                    color_schema: Optional[Dict[str, Any]],
-                    extract_out_msgs: bool = False,
-                    force_state_check_without_emulation2=False) -> Tuple[List[Dict[str, Any]], Cell, Optional[Cell]]:
+class TxStepEmulator:
     """
-    Emulate one transaction with provided emulators and current account states.
-    Returns (out_entries, new_state_em1, new_state_em2)
-    out_entries contains either [{'mode': 'success'}] or error/warn structures
-    identical to main.process_blocks behavior.
+    Unified transaction emulation stepper. Replaces emulate_tx_step and emulate_tx_step_with_in_msg.
+    Now accepts emulators and their account states in __init__.
+
+    Usage:
+      step = TxStepEmulator(block=block, loglevel=loglevel, color_schema=color_schema, em=em, account_state_em1=account_state_em1, em2=em2, account_state_em2=account_state_em2)
+      out, st1, st2, out_msgs = step.emulate(tx, extract_out_msgs=True)
+      # or with override in_msg (em2 is still executed and used for comparison):
+      step = TxStepEmulator(block=block, loglevel=loglevel, color_schema=color_schema, em=em, account_state_em1=account_state_em1, em2=em2, account_state_em2=account_state_em2)
+      out, st1, st2, out_msgs = step.emulate(tx, override_in_msg=cell, extract_out_msgs=True)
+
+    Returns:
+      Tuple[out_entries, new_state_em1, new_state_em2|None, out_msgs|None]
     """
-    out: List[Dict[str, Any]] = []
+    def __init__(self,
+                 block: Dict[str, Any],
+                 loglevel: int,
+                 color_schema: Optional[Dict[str, Any]],
+                 em: EmulatorExtern,
+                 account_state_em1: Cell,
+                 em2: EmulatorExtern,
+                 account_state_em2: Cell) -> None:
+        self.block = block
+        self.loglevel = loglevel
+        self.color_schema = color_schema
+        # Emulators and states
+        self.em: EmulatorExtern = em
+        self.em2: EmulatorExtern = em2
+        self.state1: Cell = account_state_em1
+        self.state2: Cell = account_state_em2
 
-    current_tx_cs = tx['tx'].begin_parse()
-    lt = tx['lt']
-    now = tx['now']
-    is_tock = tx['is_tock']
+    # ---- Small helpers to keep emulate() readable ----
+    def _prepare_in_msg(self, tx: Dict[str, Any], override_in_msg: Optional[Cell]) -> Tuple[Optional[Cell], int, int, bool]:
+        lt = tx['lt']
+        now = tx['now']
+        is_tock = tx['is_tock'] if override_in_msg is None else False
+        if override_in_msg is not None:
+            in_msg = override_in_msg
+        else:
+            current_tx_cs = tx['tx'].begin_parse()
+            tmp = current_tx_cs.load_ref(as_cs=True)
+            if tmp.load_bool():
+                in_msg = tmp.load_ref()
+            else:
+                in_msg = None
+        return in_msg, lt, now, is_tock
 
-    if loglevel > 4:
-        logger.debug(f"Start tx: {lt}, {now}, {is_tock}")
-
-    tmp = current_tx_cs.load_ref(as_cs=True)
-
-    if tmp.load_bool():
-        in_msg = tmp.load_ref()
-    else:
-        in_msg = None
-
-    if loglevel > 4:
-        logger.debug(
-            f"Run(em1): {account_state_em1.get_hash()} with in_msg {in_msg.get_hash() if in_msg is not None else None}")
-
-    # Emulate with primary emulator
-    if in_msg is None:
-        success1 = em.emulate_tick_tock_transaction(
-            account_state_em1,
-            is_tock,
-            now,
-            lt
-        )
-    else:
-        success1 = em.emulate_transaction(
-            account_state_em1,
-            in_msg,
-            now,
-            lt)
-
-    # Emulate with secondary emulator if available (using its own state)
-    success2 = None
-    if em2 is not None:
-        if loglevel > 4:
-            logger.debug(
-                f"Run(em2): {account_state_em2.get_hash()} with in_msg {in_msg.get_hash() if in_msg is not None else None}")
+    def _run_primary(self, in_msg: Optional[Cell], now: int, lt: int, is_tock: bool) -> bool:
+        assert self.em is not None and self.state1 is not None
         if in_msg is None:
-            success2 = em2.emulate_tick_tock_transaction(
-                account_state_em2,
-                is_tock,
-                now,
-                lt
-            )
-        else:
-            success2 = em2.emulate_transaction(
-                account_state_em2,
-                in_msg,
-                now,
-                lt)
+            return self.em.emulate_tick_tock_transaction(self.state1, is_tock, now, lt)
+        return self.em.emulate_transaction(self.state1, in_msg, now, lt)
 
-    if loglevel > 4:
-        logger.debug(
-            f"Run success(em1): {account_state_em1.get_hash()} -> {success1}, TX: {em.transaction}; "
-            f"(em2): {account_state_em2.get_hash() if em2 else 'NA'} -> {success2 if em2 else 'NA'}, TX: {em2.transaction if em2 else 'NA'}")
+    def _run_secondary(self, in_msg: Optional[Cell], now: int, lt: int, is_tock: bool) -> bool:
+        assert self.em2 is not None and self.state2 is not None
+        if in_msg is None:
+            return self.em2.emulate_tick_tock_transaction(self.state2, is_tock, now, lt)
+        return self.em2.emulate_transaction(self.state2, in_msg, now, lt)
 
-    go_as_success = True
-
-    # Primary emulator must succeed and produce a transaction
-    if not success1 or em.transaction is None:
-        if loglevel > 5:
-            logger.debug(f"emulation_new_failed")
-
-        tx1_tlb = Transaction()
-        tx1_tlb = tx1_tlb.cell_unpack(tx['tx'], True).dump()
-        go_as_success = False
-        err = {'mode': 'error', 'expected': tx['tx'].get_hash(), 'address': tx1_tlb['account_addr'],
-               'cant_emulate': True,
-               'fail_reason': "emulation_new_failed"}
-        # Attach em2 status if available
-        if em2 is not None:
-            err['unchanged_emulator_tx_hash'] = em2.transaction.get_hash() if (success2 and em2.transaction) else None
-        out.append(err)
-
-    # Emulation transaction equal current transaction
-    if go_as_success and em.transaction.get_hash() != tx['tx'].get_hash():
-        if loglevel > 5:
-            logger.debug(f"hash_missmatch")
-
-        diff, address = get_diff(tx['tx'], em.transaction.to_cell())
-
-        # Always include secondary emulator info if available
-        account_diff_dict = None
-        account_color_level = None
-        account_color_log = None
-        unchanged_emulator_tx_hash = None
-        sa_diff = None
-        try:
-            if em2 is not None:
-                unchanged_emulator_tx_hash = em2.transaction.get_hash() if em2.transaction is not None else None
-                sa_diff = get_shard_account_diff(em.account.to_cell(), em2.account.to_cell())
-                account_diff_dict = {'data': make_json_dumpable(sa_diff.to_dict()),
-                                     'account_emulator_tx_hash_match': unchanged_emulator_tx_hash == tx[
-                                         'tx'].get_hash()}
-                if color_schema is not None and 'account' in color_schema:
-                    acc_level, acc_log = get_colored_diff(sa_diff, color_schema, root='account')
-                    account_diff_dict['acc_level'] = acc_level
-                    account_diff_dict['acc_log'] = acc_log
-
-            elif force_state_check_without_emulation2:
-                sa_diff = get_shard_account_diff(em.account.to_cell(), account_state_em2)
-                account_diff_dict = {'data': make_json_dumpable(sa_diff.to_dict()),
-                                     'account_emulator_tx_hash_match': unchanged_emulator_tx_hash == tx[
-                                         'tx'].get_hash()}
-
-                if color_schema is not None and 'account' in color_schema:
-                    acc_level, acc_log = get_colored_diff(sa_diff, color_schema, root='account')
-                    account_diff_dict['acc_level'] = acc_level
-                    account_diff_dict['acc_log'] = acc_log
-
-
-        except Exception as ee:
-            logger.error(f"UNCHANGED EMULATOR ERROR: {ee}")
-
-        if color_schema is None:
-            diff_dict = diff.to_dict()
+    def _compare_and_color(self, tx: Dict[str, Any]) -> Tuple[bool, List[Dict[str, Any]]]:
+        out: List[Dict[str, Any]] = []
+        go_as_success = True
+        if self.em is None or self.em.transaction is None or self.em2 is None or self.em2.transaction is None:
+            tx1_tlb = Transaction().cell_unpack(tx['tx'], True).dump()
             go_as_success = False
-            err_obj = {'mode': 'error', 'diff': {
-                'transaction': make_json_dumpable(diff_dict),
-                'account': account_diff_dict.get('data', None) if isinstance(account_diff_dict, dict) else None,
-            },
-                       'address': f"{block['block_id'].id.workchain}:{address}",
-                       'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
-                       'fail_reason': "hash_missmatch"}
-            if account_diff_dict is not None:
-                err_obj['account_diff'] = account_diff_dict
-            if unchanged_emulator_tx_hash is not None:
-                err_obj['unchanged_emulator_tx_hash'] = unchanged_emulator_tx_hash
-            out.append(err_obj)
-        else:
-            if loglevel > 5:
-                logger.debug(f"Get color schema")
+            err = {'mode': 'error', 'expected': tx['tx'].get_hash(), 'address': tx1_tlb['account_addr'], 'cant_emulate': True, 'fail_reason': 'emulation_new_failed'}
+            if self.em2 is not None and self.em2.transaction is not None:
+                err['unchanged_emulator_tx_hash'] = self.em2.transaction.get_hash()
+            else:
+                err['cant_emulate_em2'] = True
 
-            # Evaluate transaction diff against color schema
-            max_level, log = get_colored_diff(diff, color_schema)
+            out.append(err)
+            return go_as_success, out
 
-            # Additionally, if we have account diff and color schema has 'account' section,
-            # evaluate account diff and promote max_level accordingly. Attach account color log.
-            if account_diff_dict is not None and 'account' in color_schema:
-                try:
-                    acc_level, acc_log = account_diff_dict['acc_level'], account_diff_dict['acc_log']
-                    # Promote level: alarm > warn > skip
-                    level_rank = {'alarm': 2, 'warn': 1, 'skip': 0}
-                    if level_rank.get(acc_level, 0) > level_rank.get(max_level, 0):
-                        max_level = acc_level
-                    log = {**log, 'account': acc_log}
-                except Exception as e:
-                    logger.error(f"ACCOUNT COLOR SCHEMA ERROR: {e}")
+        if self.em.transaction.get_hash() != tx['tx'].get_hash():
+            diff, address = get_diff(tx['tx'], self.em.transaction.to_cell())
 
-            address = f"{block['block_id'].id.workchain}:{address}"
+            unchanged_emulator_tx_hash = self.em2.transaction.get_hash()
+            sa_diff = get_shard_account_diff(self.em.account.to_cell(), self.em2.account.to_cell())
 
-            if loglevel > 5:
-                logger.debug(f"New max level: {max_level}")
 
-            if max_level == 'alarm':
-                logger.error(
-                    f"[COLOR_SCHEMA] Alarm! tx: {hex_to_b64(tx['tx'].get_hash())}, address: {address}, color_schema_log: {log}")
-                go_as_success = False
+            account_diff_dict: Optional[Dict[str, Any]] = None
+            if sa_diff is not None:
+                account_diff_dict = {
+                    'data': make_json_dumpable(sa_diff.to_dict()),
+                    'account_emulator_tx_hash_match': (unchanged_emulator_tx_hash == tx['tx'].get_hash())
+                }
+                if self.color_schema is not None and 'account' in self.color_schema:
+                    acc_level, acc_log = get_colored_diff(sa_diff, self.color_schema, root='account')
+                    account_diff_dict['acc_level'] = acc_level
+                    account_diff_dict['acc_log'] = acc_log
+
+            if self.color_schema is None:
                 diff_dict = diff.to_dict()
-                err_obj = {'mode': 'error',
-                           'diff': {
-                               'transaction': make_json_dumpable(diff_dict),
-                               'account': account_diff_dict.get('data', None) if isinstance(account_diff_dict,
-                                                                                            dict) else None,
-                           },
-                           'address': address,
-                           'expected': tx['tx'].get_hash(),
-                           'got': em.transaction.get_hash(),
-                           "color_schema_log": log,
-                           'fail_reason': "color_schema_alarm"}
+                go_as_success = False
+                err_obj: Dict[str, Any] = {'mode': 'error', 'diff': {
+                    'transaction': make_json_dumpable(diff_dict),
+                    'account': account_diff_dict.get('data', None) if isinstance(account_diff_dict, dict) else None,
+                },
+                    'address': f"{self.block['block_id'].id.workchain}:{address}",
+                    'expected': tx['tx'].get_hash(), 'got': self.em.transaction.get_hash(),
+                    'fail_reason': 'hash_missmatch'}
                 if account_diff_dict is not None:
                     err_obj['account_diff'] = account_diff_dict
                 if unchanged_emulator_tx_hash is not None:
                     err_obj['unchanged_emulator_tx_hash'] = unchanged_emulator_tx_hash
                 out.append(err_obj)
-            elif max_level == 'warn':
-                go_as_success = False
-                logger.warning(
-                    f"[COLOR_SCHEMA] Warning! tx: {hex_to_b64(tx['tx'].get_hash())}, address: {address}, color_schema_log: {log}")
-                warn_obj = {'mode': 'warning'}
-                if account_diff_dict is not None:
-                    warn_obj['account_diff'] = account_diff_dict
-                if unchanged_emulator_tx_hash is not None:
-                    warn_obj['unchanged_emulator_tx_hash'] = unchanged_emulator_tx_hash
-                out.append(warn_obj)
+            else:
+                max_level, log = get_colored_diff(diff, self.color_schema)
+                if account_diff_dict is not None and 'account' in self.color_schema:
+                    try:
+                        acc_level, acc_log = account_diff_dict.get('acc_level'), account_diff_dict.get('acc_log')
+                        level_rank = {'alarm': 2, 'warn': 1, 'skip': 0}
+                        if level_rank.get(acc_level, 0) > level_rank.get(max_level, 0):
+                            max_level = acc_level
+                        log = {**log, 'account': acc_log}
+                    except Exception as e:
+                        logger.error(f"ACCOUNT COLOR SCHEMA ERROR: {e}")
 
-    # Update account states for next transaction
-    try:
-        new_state_em1 = em.account.to_cell()
-    except Exception as e:
-        logger.error(f"EMULATOR ERROR, complete fail emulation of em1: {tx['tx'].get_hash()}")
-        new_state_em1 = account_state_em1
-        assert not go_as_success
+                address_str = f"{self.block['block_id'].id.workchain}:{address}"
+                if max_level == 'alarm':
+                    go_as_success = False
+                    diff_dict = diff.to_dict()
+                    err_obj = {'mode': 'error', 'diff': {
+                        'transaction': make_json_dumpable(diff_dict),
+                        'account': account_diff_dict.get('data', None) if isinstance(account_diff_dict, dict) else None,
+                    }, 'address': address_str,
+                               'expected': tx['tx'].get_hash(), 'got': self.em.transaction.get_hash(),
+                               'color_schema_log': log,
+                               'fail_reason': 'color_schema_alarm'}
+                    if account_diff_dict is not None:
+                        err_obj['account_diff'] = account_diff_dict
+                    if unchanged_emulator_tx_hash is not None:
+                        err_obj['unchanged_emulator_tx_hash'] = unchanged_emulator_tx_hash
+                    out.append(err_obj)
+                elif max_level == 'warn':
+                    go_as_success = False
+                    warn_obj: Dict[str, Any] = {'mode': 'warning'}
+                    if account_diff_dict is not None:
+                        warn_obj['account_diff'] = account_diff_dict
+                    if unchanged_emulator_tx_hash is not None:
+                        warn_obj['unchanged_emulator_tx_hash'] = unchanged_emulator_tx_hash
+                    out.append(warn_obj)
+        return go_as_success, out
 
-    try:
-        new_state_em2 = em2.account.to_cell() if em2 is not None else None
-    except Exception as e:
-        logger.error(f"EMULATOR ERROR, complete fail emulation of em1: {tx['tx'].get_hash()}")
-        new_state_em2 = account_state_em2
-        assert not go_as_success
+    def _maybe_extract_out_msgs(self, extract_out_msgs: bool) -> Optional[Dict[str, Any]]:
+        if extract_out_msgs and self.em is not None and self.em.transaction is not None:
+            return extract_message_info(self.em.transaction.to_cell())
+        return None
 
-    if go_as_success:
-        out.append({'mode': 'success'})
+    def emulate(
+        self,
+        tx: Dict[str, Any],
+        override_in_msg: Optional[Cell] = None,
+        extract_out_msgs: bool = False
+    ) -> Tuple[List[Dict[str, Any]], Cell, Optional[Cell], Optional[Dict[str, Any]]]:
+        # Prepare
+        in_msg, lt, now, is_tock = self._prepare_in_msg(tx, override_in_msg)
 
-    if extract_out_msgs and em.transaction is not None:
-        out_msgs = extract_message_info(em.transaction.to_cell())
+        if self.loglevel > 4:
+            if override_in_msg is None:
+                logger.debug(f"Start tx: {lt}, {now}, {is_tock}")
+            else:
+                logger.debug(f"Start tx (override in_msg): {lt}, {now}")
+
+        # Primary
+        success1 = self._run_primary(in_msg, now, lt, is_tock)
+        # Secondary (always)
+        success2 = self._run_secondary(in_msg, now, lt, is_tock)
+
+        if self.loglevel > 4:
+            logger.debug(
+                f"Run success(em1{('-override' if override_in_msg is not None else '')}): {self.state1.get_hash() if self.state1 is not None else None} -> {success1}, TX: {self.em.transaction if self.em is not None else None}; (em2): {self.state2.get_hash() if self.state2 is not None else None} -> {success2}, TX: {self.em2.transaction if self.em2 is not None else None}")
+
+        # Compare/hash/color (always using em2)
+        go_as_success, out = self._compare_and_color(tx)
+
+        # Finalize states
+        new_state_em1, new_state_em2 = self.em.account.to_cell(), self.em2.account.to_cell()
+        # Update internal states for subsequent calls when this instance is reused
+        self.state1 = new_state_em1
+        self.state2 = new_state_em2
+
+        if go_as_success:
+            out.append({'mode': 'success'})
+
+        out_msgs = self._maybe_extract_out_msgs(extract_out_msgs)
         return out, new_state_em1, new_state_em2, out_msgs
-    else:
-        return out, new_state_em1, new_state_em2
-
-
-def emulate_tx_step_with_in_msg(block: Dict[str, Any],
-                                tx: Dict[str, Any],
-                                em: EmulatorExtern,
-                                account_state_em1: Cell,
-                                after_state_em2: Optional[Cell],
-                                override_in_msg: Cell,
-                                loglevel: int,
-                                color_schema: Optional[Dict[str, Any]],
-                                extract_out_msgs: bool = False) -> Tuple[List[Dict[str, Any]], Cell, Optional[Cell]]:
-    """
-    Emulate one transaction but force the provided override_in_msg as the incoming message.
-    This performs the same checks and color-schema comparison against the original tx cell.
-    Secondary emulator is not supported here (trace mode).
-    Returns (out_entries, new_state_em1, None) and optionally out_msgs if extract_out_msgs.
-    """
-    out: List[Dict[str, Any]] = []
-
-    lt = tx['lt']
-    now = tx['now']
-
-    if loglevel > 4:
-        logger.debug(f"Start tx (override in_msg): {lt}, {now}")
-
-    in_msg = override_in_msg
-
-    if loglevel > 4:
-        logger.debug(
-            f"Run(em1-override): {account_state_em1.get_hash()} with in_msg {in_msg.get_hash() if in_msg is not None else None}")
-
-    # Emulate with primary emulator using the override message
-    success1 = em.emulate_transaction(account_state_em1, in_msg, now, lt)
-
-    if loglevel > 4:
-        logger.debug(
-            f"Run success(em1-override): {account_state_em1.get_hash()} -> {success1}, TX: {em.transaction}")
-
-    go_as_success = True
-
-    if not success1 or em.transaction is None:
-        if loglevel > 5:
-            logger.debug(f"emulation_new_failed")
-
-        tx1_tlb = Transaction()
-        tx1_tlb = tx1_tlb.cell_unpack(tx['tx'], True).dump()
-        go_as_success = False
-        err = {'mode': 'error', 'expected': tx['tx'].get_hash(), 'address': tx1_tlb['account_addr'],
-               'cant_emulate': True,
-               'fail_reason': "emulation_new_failed"}
-        out.append(err)
-
-    # Compare produced transaction to original
-    if go_as_success and em.transaction.get_hash() != tx['tx'].get_hash():
-        if loglevel > 5:
-            logger.debug(f"hash_missmatch")
-
-        diff, address = get_diff(tx['tx'], em.transaction.to_cell())
-
-        # Prepare account diff using provided after_state_em2 (post-state to compare against)
-        account_diff_dict = None
-        try:
-            if after_state_em2 is not None:
-                sa_diff = get_shard_account_diff(em.account.to_cell(), after_state_em2)
-                account_diff_dict = {
-                    'data': make_json_dumpable(sa_diff.to_dict()),
-                    'account_emulator_tx_hash_match': em.transaction.get_hash() == tx['tx'].get_hash()
-                }
-                if color_schema is not None and 'account' in color_schema:
-                    acc_level, acc_log = get_colored_diff(sa_diff, color_schema, root='account')
-                    account_diff_dict['acc_level'] = acc_level
-                    account_diff_dict['acc_log'] = acc_log
-        except Exception as ee:
-            logger.error(f"ACCOUNT DIFF ERROR: {ee}")
-
-        if color_schema is None:
-            diff_dict = diff.to_dict()
-            go_as_success = False
-            err_obj = {'mode': 'error', 'diff': {
-                'transaction': make_json_dumpable(diff_dict),
-                'account': account_diff_dict.get('data', None) if isinstance(account_diff_dict, dict) else None,
-            },
-                       'address': f"{block['block_id'].id.workchain}:{address}",
-                       'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
-                       'fail_reason': "hash_missmatch"}
-            if account_diff_dict is not None:
-                err_obj['account_diff'] = account_diff_dict
-            out.append(err_obj)
-        else:
-            if loglevel > 5:
-                logger.debug(f"Get color schema")
-
-            max_level, log = get_colored_diff(diff, color_schema)
-
-            # If we have account diff and schema has 'account', evaluate and promote
-            if account_diff_dict is not None and 'account' in color_schema:
-                try:
-                    acc_level, acc_log = account_diff_dict.get('acc_level'), account_diff_dict.get('acc_log')
-                    level_rank = {'alarm': 2, 'warn': 1, 'skip': 0}
-                    if level_rank.get(acc_level, 0) > level_rank.get(max_level, 0):
-                        max_level = acc_level
-                    log = {**log, 'account': acc_log}
-                except Exception as e:
-                    logger.error(f"ACCOUNT COLOR SCHEMA ERROR: {e}")
-
-            address = f"{block['block_id'].id.workchain}:{address}"
-
-            if loglevel > 5:
-                logger.debug(f"New max level: {max_level}")
-
-            if max_level == 'alarm':
-                go_as_success = False
-                diff_dict = diff.to_dict()
-                err_obj = {'mode': 'error', 'diff': {
-                    'transaction': make_json_dumpable(diff_dict),
-                    'account': account_diff_dict.get('data', None) if isinstance(account_diff_dict, dict) else None,
-                }, 'address': address,
-                           'expected': tx['tx'].get_hash(), 'got': em.transaction.get_hash(),
-                           "color_schema_log": log,
-                           'fail_reason': "color_schema_alarm"}
-                if account_diff_dict is not None:
-                    err_obj['account_diff'] = account_diff_dict
-                out.append(err_obj)
-            elif max_level == 'warn':
-                go_as_success = False
-                logger.warning(
-                    f"[COLOR_SCHEMA] Warning! tx: {hex_to_b64(tx['tx'].get_hash())}, address: {address}, color_schema_log: {log}")
-                warn_obj = {'mode': 'warning'}
-                if account_diff_dict is not None:
-                    warn_obj['account_diff'] = account_diff_dict
-                out.append(warn_obj)
-
-    # Update state
-    try:
-        new_state_em1 = em.account.to_cell()
-    except Exception:
-        logger.error(f"EMULATOR ERROR, complete fail emulation of em1: {tx['tx'].get_hash()}")
-        new_state_em1 = account_state_em1
-        assert not go_as_success
-
-    if go_as_success:
-        out.append({'mode': 'success'})
-
-    if extract_out_msgs and em.transaction is not None:
-        out_msgs = extract_message_info(em.transaction.to_cell())
-        return out, new_state_em1, None, out_msgs
-    else:
-        return out, new_state_em1, None
