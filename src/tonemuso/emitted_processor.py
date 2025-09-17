@@ -26,12 +26,6 @@ class EmittedChildCandidate:
 
 
 class EmittedMessageProcessor:
-    """
-    Helper class to process emitted internal messages and overrides, factoring out logic from
-    TraceOrderedRunner._emulate_internal_message_recursive and _process_emitted_children_with_override.
-    It operates on a TraceOrderedRunner instance to reuse its emulators, state, and maps.
-    """
-
     def __init__(self, runner: "TraceOrderedRunner") -> None:
         self.r = runner
 
@@ -65,10 +59,15 @@ class EmittedMessageProcessor:
         self.r.account_states1[block_key][account_addr] = st
         return st, cnt
 
-    def emulate_internal_message_recursive(self, block_key: BlockKey, msg: Union[Dict[str, Any], EmuMessage], now: int,
-                                           lt: int) -> \
-            Optional[Dict[str, Any]]:
-        # Allow EmuMessage too
+    def emulate_internal_message_one_layer(self, block_key: BlockKey, msg: Union[Dict[str, Any], EmuMessage], now: int,
+                                           lt: int) -> Tuple[Optional[Dict[str, Any]], List[EmittedChildCandidate]]:
+        """
+        Emulate a single internal message (new transaction) without recursing into its out messages.
+        Returns:
+          - node dict for the generated tx (or emulation_failed), never recursed
+          - pre-classified candidates for its out messages (against empty expected set)
+        """
+        # Normalize to dict same as recursive version
         if not isinstance(msg, dict) and hasattr(msg, 'dest'):
             msg = {
                 'dest': getattr(msg, 'dest', None),
@@ -79,9 +78,7 @@ class EmittedMessageProcessor:
                 'bounce': getattr(msg, 'bounce', None),
                 'bounced': getattr(msg, 'bounced', None),
             }
-        # Destination account as Address
         dest_addr: Address = msg['dest']
-
         self.r._ensure_account_state(block_key, dest_addr)
         em, _em2 = self.r._get_emulators(block_key)
         state1 = (self.r.account_states1[block_key].get(dest_addr)
@@ -90,31 +87,30 @@ class EmittedMessageProcessor:
         try:
             ok = em.emulate_transaction(state1, msg['cell'], now, lt)
             if ok:
-                # Update state and global override
                 new_state = em.account.to_cell()
                 self.r.account_states1[block_key][dest_addr] = new_state
                 self.r.global_overrides[dest_addr] = new_state
-                # Build node for this generated transaction
                 tx_cell = em.transaction.to_cell()
                 generated_transaction_hash = tx_cell.get_hash().upper()
-                node: Dict[str, Any] = {'tx_hash': hex_to_b64(generated_transaction_hash),
-                                        'in_msg_hash': hex_to_b64(msg['msg_hash']) if 'msg_hash' in msg else None,
-                                        'in_msg_body_hash': hex_to_b64(msg.get('bodyhash')) if msg.get(
-                                            'bodyhash') else None, 'opcode': msg.get('opcode'),
-                                        'destination': dest_addr.raw, 'bounce': msg.get('bounce'),
-                                        'bounced': msg.get('bounced'), 'mode': 'new_transaction', 'children': [],
-                                        'emulation_order': self.r._next_emulation_order()}
-                # Assign emulation order for this generated node
-                # Recurse into out messages of this generated tx
+                node: Dict[str, Any] = {
+                    'tx_hash': hex_to_b64(generated_transaction_hash),
+                    'in_msg_hash': hex_to_b64(msg['msg_hash']) if 'msg_hash' in msg else None,
+                    'in_msg_body_hash': hex_to_b64(msg.get('bodyhash')) if msg.get('bodyhash') else None,
+                    'opcode': msg.get('opcode'),
+                    'destination': dest_addr.raw,
+                    'bounce': msg.get('bounce'),
+                    'bounced': msg.get('bounced'),
+                    'mode': 'new_transaction',
+                    'children': [],
+                    'emulation_order': self.r._next_emulation_order()
+                }
                 info = extract_message_info(tx_cell)
-                for child_msg in info.get('out_msgs', []):
-                    child_node = self.emulate_internal_message_recursive(block_key, child_msg, now, lt)
-                    if child_node is not None:
-                        node['children'].append(child_node)
-                return node
+                emitted_raw = info.get('out_msgs', [])
+                # For generated tx there is no original mapping; pass empty parent hash so all are mismatches
+                candidates = self.classify_emitted('', emitted_raw)
+                return node, candidates
             else:
-                # Return a node indicating emulation failure instead of recording failed separately
-                return {
+                return ({
                     'tx_hash': None,
                     'in_msg_hash': hex_to_b64(msg['msg_hash']) if msg.get('msg_hash') else None,
                     'in_msg_body_hash': hex_to_b64(msg.get('bodyhash')) if msg.get('bodyhash') else None,
@@ -124,22 +120,19 @@ class EmittedMessageProcessor:
                     'bounced': msg.get('bounced'),
                     'mode': 'emulation_failed',
                     'children': []
-                }
-        except Exception as e:
-            # Return a node indicating emulation failure on exception
-            return {
+                }, [])
+        except Exception:
+            return ({
                 'tx_hash': None,
                 'in_msg_hash': hex_to_b64(msg['msg_hash']) if isinstance(msg, dict) and msg.get('msg_hash') else None,
-                'in_msg_body_hash': hex_to_b64(msg.get('bodyhash')) if isinstance(msg, dict) and msg.get(
-                    'bodyhash') else None,
+                'in_msg_body_hash': hex_to_b64(msg.get('bodyhash')) if isinstance(msg, dict) and msg.get('bodyhash') else None,
                 'opcode': (msg.get('opcode') if isinstance(msg, dict) else None),
-                'destination': (dest_addr.raw if 'dest_addr' in locals() and hasattr(dest_addr, 'raw') else (
-                    str(dest_addr) if 'dest_addr' in locals() else None)),
+                'destination': (dest_addr.raw if 'dest_addr' in locals() and hasattr(dest_addr, 'raw') else (str(dest_addr) if 'dest_addr' in locals() else None)),
                 'bounce': (msg.get('bounce') if isinstance(msg, dict) else None),
                 'bounced': (msg.get('bounced') if isinstance(msg, dict) else None),
                 'mode': 'emulation_failed',
                 'children': []
-            }
+            }, [])
 
     def classify_emitted(self,
                          parent_transaction_hash: TxHashHex,
@@ -205,20 +198,7 @@ class EmittedMessageProcessor:
             if cand.match and i < len(expected):
                 expected_in_b64 = cand.expected_in_b64
                 child_transaction_hash = cand.child_tx_hash_hex
-                if not isinstance(child_transaction_hash, str):
-                    # Fallback as mismatch if link missing
-                    extra_node = self.emulate_internal_message_recursive(parent_block_key, cand.emu_msg, parent_tx.now,
-                                                                         parent_tx.lt)
-                    if extra_node is not None:
-                        nodes.append(extra_node)
-                    continue
                 gc_idx = self.r.tx_index.get(child_transaction_hash)
-                if gc_idx is None:
-                    extra_node = self.emulate_internal_message_recursive(parent_block_key, cand.emu_msg, parent_tx.now,
-                                                                         parent_tx.lt)
-                    if extra_node is not None:
-                        nodes.append(extra_node)
-                    continue
                 gc_block_key, gc_tx = gc_idx
                 # Prepare account state
                 gc_tlb = Transaction().cell_unpack(gc_tx.tx, True)
@@ -291,11 +271,14 @@ class EmittedMessageProcessor:
                 next_contexts.append((gc_block_key, child_transaction_hash, gc_tx, gc_candidates, gc_node))
                 i += 1
             else:
-                # Mismatch: treat as new tx and emulate recursively
-                extra_node = self.emulate_internal_message_recursive(parent_block_key, cand.emu_msg, parent_tx.now,
-                                                                     parent_tx.lt)
+                # Mismatch: treat as new tx and emulate one layer; enqueue its out messages as next_context
+                extra_node, gc_candidates = self.emulate_internal_message_one_layer(
+                    parent_block_key, cand.emu_msg, parent_tx.now, parent_tx.lt
+                )
                 if extra_node is not None:
                     nodes.append(extra_node)
+                    # Push next context to process its out messages in the same layer-by-layer DFS
+                    next_contexts.append((parent_block_key, '', parent_tx, gc_candidates, extra_node))
 
         # Any remaining expected children are missed
         while i < len(expected):

@@ -127,12 +127,11 @@ def run(cfg: Config):
     trace: TonTrace = traces_typed[0]
     tx_map = trace.transactions
     tx_order = trace.transactions_order_b64
-    try:
-        first_tx = (tx_order[0] if tx_order else None)
-        logger.debug(
-            f"Using first trace: transactions={len(tx_map)}, order_len={len(tx_order)}, first_order_b64={first_tx}")
-    except Exception:
-        pass
+
+    first_tx = (tx_order[0] if tx_order else None)
+    logger.debug(
+        f"Using first trace: transactions={len(tx_map)}, order_len={len(tx_order)}, first_order_b64={first_tx}")
+
 
     TX_ORDER_LIST = [b64_to_hex(h).upper() for h in tx_order]
 

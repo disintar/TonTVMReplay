@@ -35,7 +35,7 @@ class ToncenterAPI:
                 body_hash=(in_src.get('message_content') or {}).get('hash'),
                 bounce=in_src.get('bounce'),
                 bounced=in_src.get('bounced'),
-                created_lt=in_src.get('created_lt') if isinstance(in_src.get('created_lt'), int) else None,
+                created_lt=int(in_src.get('created_lt')) if in_src.get('created_lt') is not None else None,
             )
             # out_msgs list
             outs = []
@@ -47,31 +47,22 @@ class ToncenterAPI:
                     body_hash=(m.get('message_content') or {}).get('hash'),
                     bounce=m.get('bounce'),
                     bounced=m.get('bounced'),
-                    created_lt=m.get('created_lt') if isinstance(m.get('created_lt'), int) else None,
+                    created_lt=int(m.get('created_lt')),
                 ))
             bref = info.get('block_ref') or {}
             # shard comes as hex string, convert to int when possible
             shard_raw = bref.get('shard')
-            try:
-                shard_int = int(shard_raw, 16) if isinstance(shard_raw, str) else int(shard_raw)
-            except Exception:
-                shard_int = 0
+            shard_int = int(shard_raw, 16) if isinstance(shard_raw, str) else int(shard_raw)
             block_ref = None
             if bref:
-                try:
-                    block_ref = BlockRef(workchain=int(bref.get('workchain')), shard=shard_int, seqno=int(bref.get('seqno')))
-                except Exception:
-                    block_ref = None
+                block_ref = BlockRef(workchain=int(bref.get('workchain')), shard=shard_int, seqno=int(bref.get('seqno')))
             # Parse lt robustly: accept int or numeric string
             lt_raw = info.get('lt')
-            try:
-                if isinstance(lt_raw, int):
-                    lt_val = lt_raw
-                elif isinstance(lt_raw, str):
-                    lt_val = int(lt_raw)
-                else:
-                    lt_val = None
-            except Exception:
+            if isinstance(lt_raw, int):
+                lt_val = lt_raw
+            elif isinstance(lt_raw, str):
+                lt_val = int(lt_raw)
+            else:
                 lt_val = None
             txs[tx_b64] = TonTxDetails(
                 tx_b64=tx_b64,
@@ -113,10 +104,8 @@ class ToncenterAPI:
         data = resp.json()
         traces = []
         for t in (data.get('traces') or []):
-            try:
-                traces.append(self._parse_trace(t))
-            except Exception:
-                continue
+            traces.append(self._parse_trace(t))
+
         return traces
 
     def get_traces_by_lt_range_typed(self, start_lt: int, end_lt: int, include_actions: bool = False,
@@ -135,8 +124,5 @@ class ToncenterAPI:
         data = resp.json()
         traces = []
         for t in (data.get('traces') or []):
-            try:
-                traces.append(self._parse_trace(t))
-            except Exception:
-                continue
+            traces.append(self._parse_trace(t))
         return traces

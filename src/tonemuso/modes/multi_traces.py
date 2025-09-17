@@ -61,10 +61,7 @@ def run(cfg: Config):
         pages += 1
         pbar.update(len(page_traces))
         offset += limit
-    try:
-        pbar.close()
-    except Exception:
-        pass
+    pbar.close()
 
     logger.debug(
         f"Toncenter multi-trace fetch complete: total={len(all_traces)}, pages={pages}, downloaded={downloaded}, lt_range=[{start_lt},{end_lt}]")
@@ -79,10 +76,8 @@ def run(cfg: Config):
             for _, txd in trace.transactions.items():
                 bref = txd.block_ref
                 if bref is not None:
-                    try:
-                        union_blocks.add((int(bref.workchain), int(bref.shard), int(bref.seqno)))
-                    except Exception:
-                        pass
+                    union_blocks.add((int(bref.workchain), int(bref.shard), int(bref.seqno)))
+
         except Exception as e:
             logger.error(f"Failed to collect blocks for a trace: {e}")
 
