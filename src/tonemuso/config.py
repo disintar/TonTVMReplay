@@ -66,7 +66,7 @@ class Config:
                 cfg.color_schema = json.load(f)
         else:
             cfg.color_schema = None
-            logger.warnging("COLOR_SCHEMA is not defined")
+            logger.warning("COLOR_SCHEMA is not defined")
 
         # Emulators
         cfg.emulator_path = os.getenv("EMULATOR_PATH")
