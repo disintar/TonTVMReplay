@@ -178,6 +178,11 @@ class EmulatedNode:
                     summary['unchanged_emulator_tx_hash'] = e['unchanged_emulator_tx_hash']
                 if 'account_emulator_tx_hash_match' in e:
                     summary['account_emulator_tx_hash_match'] = e['account_emulator_tx_hash_match']
+                # Map legacy fail_reason to error_reason and forward if present
+                if 'error_reason' in e and e.get('error_reason'):
+                    summary['error_reason'] = e.get('error_reason')
+                elif 'fail_reason' in e and e.get('fail_reason'):
+                    summary['error_reason'] = e.get('fail_reason')
                 return summary
 
         return {'mode': 'success'}
@@ -210,6 +215,10 @@ class EmulatedNode:
             node['color_schema_log'] = csl_val
         if acct_match_val is not None:
             node['account_emulator_tx_hash_match'] = acct_match_val
+        # Forward error_reason if present in mode_info (or explicitly set later)
+        err_reason = (self.mode_info or {}).get('error_reason')
+        if err_reason:
+            node['error_reason'] = err_reason
         if isinstance(self.buffer_emulated_count, int):
             node['buffer_emulated_count'] = self.buffer_emulated_count
         return node

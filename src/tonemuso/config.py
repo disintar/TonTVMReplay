@@ -3,7 +3,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, List
-
+from loguru import logger
 
 @dataclass
 class Config:
@@ -62,13 +62,11 @@ class Config:
         cspath = os.getenv("COLOR_SCHEMA_PATH", "").strip()
         cfg.color_schema_path = cspath or None
         if cfg.color_schema_path:
-            try:
-                with open(cfg.color_schema_path, "r") as f:
-                    cfg.color_schema = json.load(f)
-            except Exception:
-                cfg.color_schema = None
+            with open(cfg.color_schema_path, "r") as f:
+                cfg.color_schema = json.load(f)
         else:
             cfg.color_schema = None
+            logger.warnging("COLOR_SCHEMA is not defined")
 
         # Emulators
         cfg.emulator_path = os.getenv("EMULATOR_PATH")

@@ -49,7 +49,7 @@ class EmittedMessageProcessor:
             assert bt_addr == account_addr
             # Run stepper (no out msgs extraction) using current state
             step_b = TxStepEmulator(block=self.r.blocks[block_key], loglevel=self.r.loglevel,
-                                    color_schema=None, em=em, account_state_em1=st, em2=em2,
+                                    color_schema=self.r.color_schema, em=em, account_state_em1=st, em2=em2,
                                     account_state_em2=st)
             _out_b, new_st1, _new_st2, _ = step_b.emulate(bt, extract_out_msgs=False)
             st = new_st1

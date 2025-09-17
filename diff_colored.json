@@ -2,21 +2,27 @@
   "transaction": {
     "account_addr": "alarm",
     "lt": "alarm",
-    "prev_trans_hash": "alarm",
+    "prev_trans_hash": "warn",
     "prev_trans_lt": "alarm",
     "now": "alarm",
     "outmsg_cnt": "alarm",
-    "orig_status": "warn",
-    "end_status": "warn",
+    "orig_status": "alarm",
+    "end_status": "alarm",
     "r1": {
-      "in_msg": "alarm",
-      "out_msgs": "alarm"
+      "in_msg": {
+        "value": {
+          "info": {
+            "fwd_fee": "alarm",
+            "value": {
+              "grams": { "len": "warn", "value": "warn" }
+            }
+          }
+        }
+      },
+      "out_msgs": "warn"
     },
-    "total_fees": {
-      "grams": "alarm",
-      "other": "alarm"
-    },
-    "state_update": "alarm",
+    "total_fees": { "value": { "len": "warn", "value": "warn" } },
+    "state_update": "warn",
     "description": {
       "is_tock": "alarm",
       "storage_ph": {
@@ -24,18 +30,25 @@
         "storage_fees_due": "alarm",
         "status_change": "alarm"
       },
+      "credit_ph": {
+        "value": {
+          "credit": {
+            "grams": { "len": "warn", "value": "warn" }
+          }
+        }
+      },
       "compute_ph": {
         "success": "alarm",
         "msg_state_used": "alarm",
         "account_activated": "alarm",
-        "gas_fees": "alarm",
+        "gas_fees": { "len": "warn", "value": "warn" },
         "r1": {
           "gas_used": "warn",
-          "gas_limit": "warn",
-          "gas_credit": "warn",
-          "mode": "warn",
+          "gas_limit": { "len": "warn", "value": "warn" }",
+          "gas_credit": { "len": "warn", "value": "warn" },
+          "mode": "alarm",
           "exit_code": "alarm",
-          "exit_arg": "alarm",
+          "exit_arg": { "len": "warn", "value": "warn" },
           "vm_steps": "alarm",
           "vm_init_state_hash": "alarm",
           "vm_final_state_hash": "alarm"
@@ -58,7 +71,7 @@
           "action_list_hash": "warn",
           "tot_msg_size": {
             "cells": "alarm",
-            "bits": "alarm"
+            "bits": { "len": "warn", "value": "warn" }
           }
         }
       },
@@ -67,6 +80,20 @@
     }
   },
   "account": {
-
+    "last_trans_hash": "warn",
+    "account": {
+      "storage_stat": {
+        "used": {
+          "bits": { "len": "warn", "value": "warn" }
+        }
+      },
+      "storage": {
+        "balance": {
+          "grams": { "len": "warn", "value": "warn" }
+        }
+      }
+    }
+  },
+  "trace": {
   }
 }

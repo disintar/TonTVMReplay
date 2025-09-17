@@ -103,6 +103,7 @@ class TxStepEmulator:
     Returns:
       Tuple[out_entries, new_state_em1, new_state_em2|None, out_msgs|None]
     """
+
     def __init__(self,
                  block: Dict[str, Any],
                  loglevel: int,
@@ -121,7 +122,8 @@ class TxStepEmulator:
         self.state2: Cell = account_state_em2
 
     # ---- Small helpers to keep emulate() readable ----
-    def _prepare_in_msg(self, tx: Dict[str, Any], override_in_msg: Optional[Cell]) -> Tuple[Optional[Cell], int, int, bool]:
+    def _prepare_in_msg(self, tx: Dict[str, Any], override_in_msg: Optional[Cell]) -> Tuple[
+        Optional[Cell], int, int, bool]:
         lt = tx['lt']
         now = tx['now']
         is_tock = tx['is_tock'] if override_in_msg is None else False
@@ -154,7 +156,8 @@ class TxStepEmulator:
         if self.em is None or self.em.transaction is None or self.em2 is None or self.em2.transaction is None:
             tx1_tlb = Transaction().cell_unpack(tx['tx'], True).dump()
             go_as_success = False
-            err = {'mode': 'error', 'expected': tx['tx'].get_hash(), 'address': tx1_tlb['account_addr'], 'cant_emulate': True, 'fail_reason': 'emulation_new_failed'}
+            err = {'mode': 'error', 'expected': tx['tx'].get_hash(), 'address': tx1_tlb['account_addr'],
+                   'cant_emulate': True, 'fail_reason': 'emulation_new_failed'}
             if self.em2 is not None and self.em2.transaction is not None:
                 err['unchanged_emulator_tx_hash'] = self.em2.transaction.get_hash()
             else:
@@ -168,7 +171,6 @@ class TxStepEmulator:
 
             unchanged_emulator_tx_hash = self.em2.transaction.get_hash()
             sa_diff = get_shard_account_diff(self.em2.account.to_cell(), self.em.account.to_cell())
-
 
             account_diff_dict: Optional[Dict[str, Any]] = None
             if sa_diff is not None:
@@ -188,9 +190,9 @@ class TxStepEmulator:
                     'transaction': make_json_dumpable(diff_dict),
                     'account': account_diff_dict.get('data', None) if isinstance(account_diff_dict, dict) else None,
                 },
-                    'address': f"{self.block['block_id'].id.workchain}:{address}",
-                    'expected': tx['tx'].get_hash(), 'got': self.em.transaction.get_hash(),
-                    'fail_reason': 'hash_missmatch'}
+                                           'address': f"{self.block['block_id'].id.workchain}:{address}",
+                                           'expected': tx['tx'].get_hash(), 'got': self.em.transaction.get_hash(),
+                                           'fail_reason': 'hash_missmatch'}
                 if account_diff_dict is not None:
                     err_obj['account_diff'] = account_diff_dict
                 if unchanged_emulator_tx_hash is not None:
@@ -240,10 +242,10 @@ class TxStepEmulator:
         return None
 
     def emulate(
-        self,
-        tx: Dict[str, Any],
-        override_in_msg: Optional[Cell] = None,
-        extract_out_msgs: bool = False
+            self,
+            tx: Dict[str, Any],
+            override_in_msg: Optional[Cell] = None,
+            extract_out_msgs: bool = False
     ) -> Tuple[List[Dict[str, Any]], Cell, Optional[Cell], Optional[Dict[str, Any]]]:
         # Prepare
         in_msg, lt, now, is_tock = self._prepare_in_msg(tx, override_in_msg)
