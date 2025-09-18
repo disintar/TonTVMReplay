@@ -44,7 +44,7 @@
         "gas_fees": { "len": "warn", "value": "warn" },
         "r1": {
           "gas_used": "warn",
-          "gas_limit": { "len": "warn", "value": "warn" }",
+          "gas_limit": { "len": "warn", "value": "warn" },
           "gas_credit": { "len": "warn", "value": "warn" },
           "mode": "alarm",
           "exit_code": "alarm",

@@ -178,6 +178,8 @@ class EmulatedNode:
                     summary['unchanged_emulator_tx_hash'] = e['unchanged_emulator_tx_hash']
                 if 'account_emulator_tx_hash_match' in e:
                     summary['account_emulator_tx_hash_match'] = e['account_emulator_tx_hash_match']
+                if 'account_code_hash' in e:
+                    summary['account_code_hash'] = e['account_code_hash']
                 # Map legacy fail_reason to error_reason and forward if present
                 if 'error_reason' in e and e.get('error_reason'):
                     summary['error_reason'] = e.get('error_reason')
@@ -195,6 +197,7 @@ class EmulatedNode:
         csl_val = self.color_schema_log if self.color_schema_log is not None else minfo.get('color_schema_log')
         uhash_val = self.unchanged_emulator_tx_hash if self.unchanged_emulator_tx_hash is not None else minfo.get('unchanged_emulator_tx_hash')
         acct_match_val = self.account_emulator_tx_hash_match if self.account_emulator_tx_hash_match is not None else minfo.get('account_emulator_tx_hash_match')
+        acct_code_hash_val = minfo.get('account_code_hash')
 
         node: Dict[str, Any] = {
             'tx_hash': (hex_to_b64(self.tx_hash_hex) if isinstance(self.tx_hash_hex, str) else None),
@@ -215,6 +218,8 @@ class EmulatedNode:
             node['color_schema_log'] = csl_val
         if acct_match_val is not None:
             node['account_emulator_tx_hash_match'] = acct_match_val
+        if acct_code_hash_val is not None:
+            node['account_code_hash'] = acct_code_hash_val
         # Forward error_reason if present in mode_info (or explicitly set later)
         err_reason = (self.mode_info or {}).get('error_reason')
         if err_reason:

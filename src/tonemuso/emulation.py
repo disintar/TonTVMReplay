@@ -3,7 +3,7 @@ from typing import List, Optional, Tuple, Dict, Any
 
 from tonpy import Cell, VmDict, Address
 from tonpy.tvm.not_native.emulator_extern import EmulatorExtern
-from tonpy.autogen.block import Transaction, MessageAny
+from tonpy.autogen.block import Transaction, MessageAny, ShardAccount
 from loguru import logger
 
 from tonemuso.diff import get_diff, get_colored_diff, make_json_dumpable, get_shard_account_diff
@@ -150,14 +150,25 @@ class TxStepEmulator:
             return self.em2.emulate_tick_tock_transaction(self.state2, is_tock, now, lt)
         return self.em2.emulate_transaction(self.state2, in_msg, now, lt)
 
+
+    def _extract_account_code_hash(self):
+        try:
+            sa = self.em2.account.to_cell()
+            sa_o = ShardAccount()
+            return  sa_o.cell_unpack(sa, True).account.storage.state.x.code.value.get_hash()
+        except Exception as e:
+            return 'UNKNOWN'
+
+
     def _compare_and_color(self, tx: Dict[str, Any]) -> Tuple[bool, List[Dict[str, Any]]]:
         out: List[Dict[str, Any]] = []
         go_as_success = True
+        account_code_hash = self._extract_account_code_hash()
         if self.em is None or self.em.transaction is None or self.em2 is None or self.em2.transaction is None:
             tx1_tlb = Transaction().cell_unpack(tx['tx'], True).dump()
             go_as_success = False
             err = {'mode': 'error', 'expected': tx['tx'].get_hash(), 'address': tx1_tlb['account_addr'],
-                   'cant_emulate': True, 'fail_reason': 'emulation_new_failed'}
+                   'cant_emulate': True, 'fail_reason': 'emulation_new_failed', 'account_code_hash': account_code_hash}
             if self.em2 is not None and self.em2.transaction is not None:
                 err['unchanged_emulator_tx_hash'] = self.em2.transaction.get_hash()
             else:
@@ -192,7 +203,8 @@ class TxStepEmulator:
                 },
                                            'address': f"{self.block['block_id'].id.workchain}:{address}",
                                            'expected': tx['tx'].get_hash(), 'got': self.em.transaction.get_hash(),
-                                           'fail_reason': 'hash_missmatch'}
+                                           'fail_reason': 'hash_missmatch',
+                                           'account_code_hash': account_code_hash}
                 if account_diff_dict is not None:
                     err_obj['account_diff'] = account_diff_dict
                 if unchanged_emulator_tx_hash is not None:
@@ -220,7 +232,8 @@ class TxStepEmulator:
                     }, 'address': address_str,
                                'expected': tx['tx'].get_hash(), 'got': self.em.transaction.get_hash(),
                                'color_schema_log': log,
-                               'fail_reason': 'color_schema_alarm'}
+                               'fail_reason': 'color_schema_alarm',
+                               'account_code_hash': account_code_hash}
                     if account_diff_dict is not None:
                         err_obj['account_diff'] = account_diff_dict
                     if unchanged_emulator_tx_hash is not None:
@@ -228,7 +241,16 @@ class TxStepEmulator:
                     out.append(err_obj)
                 elif max_level == 'warn':
                     go_as_success = False
-                    warn_obj: Dict[str, Any] = {'mode': 'warning'}
+                    # Include diff for warning the same way as for error to aid diagnostics
+                    diff_dict = diff.to_dict()
+                    warn_obj: Dict[str, Any] = {
+                        'mode': 'warning',
+                        'diff': {
+                            'transaction': make_json_dumpable(diff_dict),
+                            'account': account_diff_dict.get('data', None) if isinstance(account_diff_dict, dict) else None,
+                        },
+                        'account_code_hash': account_code_hash,
+                    }
                     if account_diff_dict is not None:
                         warn_obj['account_diff'] = account_diff_dict
                     if unchanged_emulator_tx_hash is not None:
@@ -275,7 +297,7 @@ class TxStepEmulator:
         self.state2 = new_state_em2
 
         if go_as_success:
-            out.append({'mode': 'success'})
+            out.append({'mode': 'success', 'account_code_hash': self._extract_account_code_hash()})
 
         out_msgs = self._maybe_extract_out_msgs(extract_out_msgs)
         return out, new_state_em1, new_state_em2, out_msgs
