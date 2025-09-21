@@ -1,8 +1,10 @@
 from deepdiff import DeepDiff
 from tonpy.autogen.block import Transaction, ShardAccount
 from loguru import logger
+from tonpy import Cell, CellBuilder, CellSlice
 import json
 import re
+
 
 def make_json_dumpable(obj):
     """
@@ -28,6 +30,17 @@ def make_json_dumpable(obj):
             return str(obj)
 
 
+def convert_any_to_hash(x):
+    for i in x:
+        if isinstance(x[i], dict):
+            updated = convert_any_to_hash(x[i])
+            x[i] = updated
+        elif isinstance(x[i], (Cell, CellSlice, CellBuilder)):
+            x[i] = x[i].get_hash()
+
+    return x
+
+
 class PathGetter:
     def __init__(self):
         self.path = []
@@ -51,7 +64,8 @@ def get_diff(tx1, tx2):
     tx2_tlb = Transaction()
     tx2_tlb = tx2_tlb.cell_unpack(tx2, True).dump()
 
-    diff = DeepDiff(tx1_tlb, tx2_tlb)
+    diff = DeepDiff(convert_any_to_hash(tx1_tlb),
+                    convert_any_to_hash(tx2_tlb))
 
     address = tx1_tlb['account_addr']
     del tx1_tlb
@@ -133,7 +147,9 @@ def get_colored_diff(diff, color_schema, root='transaction'):
                 # Parser supports single comparisons like "diff > 3 else skip" and chained ranges like "0 <= diff < 1000 else skip"
                 text_rule = str(rule)
                 # First, try chained form: a OP1 (diff|abs_diff|new_value) OP2 b else ACTION
-                m_range = re.match(r"\s*(-?\d+)\s*(<=|<|>=|>)\s*(diff|abs_diff|new_value)\s*(<=|<|>=|>)\s*(-?\d+)\s*else\s*(skip|warn|alarm)\s*$", text_rule)
+                m_range = re.match(
+                    r"\s*(-?\d+)\s*(<=|<|>=|>)\s*(diff|abs_diff|new_value)\s*(<=|<|>=|>)\s*(-?\d+)\s*else\s*(skip|warn|alarm)\s*$",
+                    text_rule)
                 m = None
                 if m_range:
                     low_s, op1, lhs, op2, high_s, else_action = m_range.groups()
@@ -162,6 +178,7 @@ def get_colored_diff(diff, color_schema, root='transaction'):
                             if op == '>=':
                                 return a >= b
                             return False
+
                         cond = _cmp(low, op1, val) and _cmp(val, op2, high)
                         if cond:
                             if max_level != 'alarm':
@@ -184,7 +201,9 @@ def get_colored_diff(diff, color_schema, root='transaction'):
                         applied = True
                 else:
                     # Fall back to single-comparison form
-                    m = re.match(r"\s*(diff|abs_diff|new_value)\s*(==|!=|>=|<=|>|<)\s*(-?\d+)\s*else\s*(skip|warn|alarm)\s*$", text_rule)
+                    m = re.match(
+                        r"\s*(diff|abs_diff|new_value)\s*(==|!=|>=|<=|>|<)\s*(-?\d+)\s*else\s*(skip|warn|alarm)\s*$",
+                        text_rule)
                     if m:
                         lhs, op, num_s, else_action = m.groups()
                         num = int(num_s)
@@ -263,5 +282,6 @@ def get_shard_account_diff(sa1_cell, sa2_cell):
     sa2 = ShardAccount()
     sa2_dump = sa2.cell_unpack(sa2_cell, True).dump()
 
-    diff = DeepDiff(sa1_dump, sa2_dump)
+    diff = DeepDiff(convert_any_to_hash(sa1_dump),
+                    convert_any_to_hash(sa2_dump))
     return diff
