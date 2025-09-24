@@ -198,7 +198,8 @@ def run(cfg: Config):
                                 toncenter_trace=trace,
                                 lcparams=lcparams,
                                 emulator_path=cfg.emulator_path,
-                                emulator_unchanged_path=cfg.emulator_unchanged_path)
+                                emulator_unchanged_path=cfg.emulator_unchanged_path,
+                                use_boc_for_diff=True)
     runner.run(TX_ORDER_LIST or [])
 
     # Pretty print the emulated tree with emulation_order annotations

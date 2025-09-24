@@ -1,4 +1,4 @@
-tonpy==0.0.0.1.4a0
+tonpy==0.0.0.1.4b0
 deepdiff
 cytoolz
 requests

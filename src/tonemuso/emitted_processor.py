@@ -50,7 +50,7 @@ class EmittedMessageProcessor:
             # Run stepper (no out msgs extraction) using current state
             step_b = TxStepEmulator(block=self.r.blocks[block_key], loglevel=self.r.loglevel,
                                     color_schema=self.r.color_schema, em=em, account_state_em1=st, em2=em2,
-                                    account_state_em2=st)
+                                    account_state_em2=st, use_boc_for_diff=self.r.use_boc_for_diff)
             _out_b, new_st1, _new_st2, _ = step_b.emulate(bt, extract_out_msgs=False)
             st = new_st1
             cnt += 1
@@ -232,7 +232,7 @@ class EmittedMessageProcessor:
                 # Emulate with override message via unified stepper (always compare/color)
                 step_gc = TxStepEmulator(block=self.r.blocks[gc_block_key], loglevel=self.r.loglevel,
                                          color_schema=self.r.color_schema, em=emu, account_state_em1=gc_state,
-                                         em2=emu2, account_state_em2=gc_state)
+                                         em2=emu2, account_state_em2=gc_state, use_boc_for_diff=self.r.use_boc_for_diff)
                 tmp_out3, new_state_gc, _ns, gc_out_msgs = step_gc.emulate(
                     gc_tx,
                     override_in_msg=cand.emu_msg.cell,

@@ -30,13 +30,16 @@ def make_json_dumpable(obj):
             return str(obj)
 
 
-def convert_any_to_hash(x):
+def convert_any_to_hash(x, to_boc=False):
     for i in x:
         if isinstance(x[i], dict):
-            updated = convert_any_to_hash(x[i])
+            updated = convert_any_to_hash(x[i], to_boc=to_boc)
             x[i] = updated
         elif isinstance(x[i], (Cell, CellSlice, CellBuilder)):
-            x[i] = x[i].get_hash()
+            if to_boc:
+                x[i] = x[i].to_boc()
+            else:
+                x[i] = x[i].get_hash()
 
     return x
 
@@ -57,15 +60,15 @@ class PathGetter:
         return self.path
 
 
-def get_diff(tx1, tx2):
+def get_diff(tx1, tx2, to_boc: bool = False):
     tx1_tlb = Transaction()
     tx1_tlb = tx1_tlb.cell_unpack(tx1, True).dump()
 
     tx2_tlb = Transaction()
     tx2_tlb = tx2_tlb.cell_unpack(tx2, True).dump()
 
-    diff = DeepDiff(convert_any_to_hash(tx1_tlb),
-                    convert_any_to_hash(tx2_tlb))
+    diff = DeepDiff(convert_any_to_hash(tx1_tlb, to_boc=to_boc),
+                    convert_any_to_hash(tx2_tlb, to_boc=to_boc))
 
     address = tx1_tlb['account_addr']
     del tx1_tlb

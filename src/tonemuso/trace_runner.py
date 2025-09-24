@@ -48,7 +48,8 @@ class TraceOrderedRunner:
                  preindexed: Optional[Dict[str, Any]] = None,
                  emulator_path: Optional[str] = None,
                  emulator_unchanged_path: Optional[str] = None,
-                 toncenter_trace: "TonTrace" = None):
+                 toncenter_trace: "TonTrace" = None,
+                 use_boc_for_diff: bool = False):
         # Indices and caches
         self.tx_index: Dict[TxHashHex, Tuple[BlockKey, Dict[str, Any]]] = OrderedDict()
         self.blocks: Dict[BlockKey, Dict[str, Any]] = OrderedDict()
@@ -67,6 +68,9 @@ class TraceOrderedRunner:
         self.tx_order_hex_upper = tx_order_hex_upper or []
         self.emulator_path = emulator_path
         self.emulator_unchanged_path = emulator_unchanged_path
+
+        # Diff behavior flag for transaction comparison
+        self.use_boc_for_diff: bool = bool(use_boc_for_diff)
 
         # Results and global state overrides
         self.failed_traces: List[Dict[str, Any]] = []
@@ -325,7 +329,8 @@ class TraceOrderedRunner:
 
         # Emulate root tx via unified stepper
         step = TxStepEmulator(block=self.blocks[block_key], loglevel=self.loglevel, color_schema=self.color_schema,
-                              em=em, account_state_em1=state1, em2=em2, account_state_em2=state1)
+                              em=em, account_state_em1=state1, em2=em2, account_state_em2=state1,
+                              use_boc_for_diff=self.use_boc_for_diff)
         tmp_out, new_state1, _new_state2, out_msgs = step.emulate(
             tx,
             extract_out_msgs=True

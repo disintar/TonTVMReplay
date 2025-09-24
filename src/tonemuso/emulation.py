@@ -111,7 +111,8 @@ class TxStepEmulator:
                  em: EmulatorExtern,
                  account_state_em1: Cell,
                  em2: EmulatorExtern,
-                 account_state_em2: Cell) -> None:
+                 account_state_em2: Cell,
+                 use_boc_for_diff: bool = False) -> None:
         self.block = block
         self.loglevel = loglevel
         self.color_schema = color_schema
@@ -120,6 +121,8 @@ class TxStepEmulator:
         self.em2: EmulatorExtern = em2
         self.state1: Cell = account_state_em1
         self.state2: Cell = account_state_em2
+        # Diff behavior flag: when True, compare BOCs instead of hashes
+        self.use_boc_for_diff: bool = bool(use_boc_for_diff)
 
     # ---- Small helpers to keep emulate() readable ----
     def _prepare_in_msg(self, tx: Dict[str, Any], override_in_msg: Optional[Cell]) -> Tuple[
@@ -178,7 +181,7 @@ class TxStepEmulator:
             return go_as_success, out
 
         if self.em.transaction.get_hash() != tx['tx'].get_hash():
-            diff, address = get_diff(tx['tx'], self.em.transaction.to_cell())
+            diff, address = get_diff(tx['tx'], self.em.transaction.to_cell(), to_boc=self.use_boc_for_diff)
 
             unchanged_emulator_tx_hash = self.em2.transaction.get_hash()
             sa_diff = get_shard_account_diff(self.em2.account.to_cell(), self.em.account.to_cell())
