@@ -176,6 +176,12 @@ class EmulatedNode:
                     summary['color_schema_log'] = e['color_schema_log']
                 if 'unchanged_emulator_tx_hash' in e:
                     summary['unchanged_emulator_tx_hash'] = e['unchanged_emulator_tx_hash']
+                if 'unchanged_emulator_account_hash' in e:
+                    summary['unchanged_emulator_account_hash'] = e['unchanged_emulator_account_hash']
+                if 'unchanged_emulator_tx_hash_match' in e:
+                    summary['unchanged_emulator_tx_hash_match'] = e['unchanged_emulator_tx_hash_match']
+                if 'changed_emulator_account_hash' in e:
+                    summary['changed_emulator_account_hash'] = e['changed_emulator_account_hash']
                 if 'account_emulator_tx_hash_match' in e:
                     summary['account_emulator_tx_hash_match'] = e['account_emulator_tx_hash_match']
                 if 'account_code_hash' in e:
@@ -198,6 +204,9 @@ class EmulatedNode:
         uhash_val = self.unchanged_emulator_tx_hash if self.unchanged_emulator_tx_hash is not None else minfo.get('unchanged_emulator_tx_hash')
         acct_match_val = self.account_emulator_tx_hash_match if self.account_emulator_tx_hash_match is not None else minfo.get('account_emulator_tx_hash_match')
         acct_code_hash_val = minfo.get('account_code_hash')
+        unchanged_acc_hash_val = minfo.get('unchanged_emulator_account_hash')
+        unchanged_tx_hash_match_val = minfo.get('unchanged_emulator_tx_hash_match')
+        changed_acc_hash_val = minfo.get('changed_emulator_account_hash')
 
         node: Dict[str, Any] = {
             'tx_hash': (hex_to_b64(self.tx_hash_hex) if isinstance(self.tx_hash_hex, str) else None),
@@ -220,6 +229,12 @@ class EmulatedNode:
             node['account_emulator_tx_hash_match'] = acct_match_val
         if acct_code_hash_val is not None:
             node['account_code_hash'] = acct_code_hash_val
+        if unchanged_acc_hash_val is not None:
+            node['unchanged_emulator_account_hash'] = unchanged_acc_hash_val
+        if unchanged_tx_hash_match_val is not None:
+            node['unchanged_emulator_tx_hash_match'] = unchanged_tx_hash_match_val
+        if changed_acc_hash_val is not None:
+            node['changed_emulator_account_hash'] = changed_acc_hash_val
         # Forward error_reason if present in mode_info (or explicitly set later)
         err_reason = (self.mode_info or {}).get('error_reason')
         if err_reason:

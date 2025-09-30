@@ -7,6 +7,7 @@ from tonpy.autogen.block import Transaction, MessageAny, ShardAccount
 from loguru import logger
 
 from tonemuso.diff import get_diff, get_colored_diff, make_json_dumpable, get_shard_account_diff
+from tonemuso.utils import hex_to_b64
 
 
 def init_emulators(block: Dict[str, Any], config_override: Dict[str, Any], emulator_path: str,
@@ -185,12 +186,14 @@ class TxStepEmulator:
 
             unchanged_emulator_tx_hash = self.em2.transaction.get_hash()
             sa_diff = get_shard_account_diff(self.em2.account.to_cell(), self.em.account.to_cell())
+            unchanged_emulator_tx_hash_match = unchanged_emulator_tx_hash == tx['tx'].get_hash()
+            unchanged_emulator_account_hash = self.em2.account.to_cell().get_hash()
+            changed_emulator_account_hash = self.em.account.to_cell().get_hash()
 
             account_diff_dict: Optional[Dict[str, Any]] = None
             if sa_diff is not None:
                 account_diff_dict = {
-                    'data': make_json_dumpable(sa_diff.to_dict()),
-                    'account_emulator_tx_hash_match': (unchanged_emulator_tx_hash == tx['tx'].get_hash())
+                    'data': make_json_dumpable(sa_diff.to_dict())
                 }
                 if self.color_schema is not None and 'account' in self.color_schema:
                     acc_level, acc_log = get_colored_diff(sa_diff, self.color_schema, root='account')
@@ -211,7 +214,13 @@ class TxStepEmulator:
                 if account_diff_dict is not None:
                     err_obj['account_diff'] = account_diff_dict
                 if unchanged_emulator_tx_hash is not None:
-                    err_obj['unchanged_emulator_tx_hash'] = unchanged_emulator_tx_hash
+                    err_obj['unchanged_emulator_tx_hash'] = hex_to_b64(unchanged_emulator_tx_hash)
+                if unchanged_emulator_tx_hash_match is not None:
+                    err_obj['unchanged_emulator_tx_hash_match'] = unchanged_emulator_tx_hash_match
+                if unchanged_emulator_account_hash is not None:
+                    err_obj['unchanged_emulator_account_hash'] = unchanged_emulator_account_hash
+                if changed_emulator_account_hash is not None:
+                    err_obj['changed_emulator_account_hash'] = changed_emulator_account_hash
                 out.append(err_obj)
             else:
                 max_level, log = get_colored_diff(diff, self.color_schema)
@@ -237,10 +246,17 @@ class TxStepEmulator:
                                'color_schema_log': log,
                                'fail_reason': 'color_schema_alarm',
                                'account_code_hash': account_code_hash}
+
                     if account_diff_dict is not None:
                         err_obj['account_diff'] = account_diff_dict
                     if unchanged_emulator_tx_hash is not None:
-                        err_obj['unchanged_emulator_tx_hash'] = unchanged_emulator_tx_hash
+                        err_obj['unchanged_emulator_tx_hash'] = hex_to_b64(unchanged_emulator_tx_hash)
+                    if unchanged_emulator_tx_hash_match is not None:
+                        err_obj['unchanged_emulator_tx_hash_match'] = unchanged_emulator_tx_hash_match
+                    if unchanged_emulator_account_hash is not None:
+                        err_obj['unchanged_emulator_account_hash'] = unchanged_emulator_account_hash
+                    if changed_emulator_account_hash is not None:
+                        err_obj['changed_emulator_account_hash'] = changed_emulator_account_hash
                     out.append(err_obj)
                 elif max_level == 'warn':
                     go_as_success = False
@@ -254,10 +270,17 @@ class TxStepEmulator:
                         },
                         'account_code_hash': account_code_hash,
                     }
+
                     if account_diff_dict is not None:
                         warn_obj['account_diff'] = account_diff_dict
                     if unchanged_emulator_tx_hash is not None:
-                        warn_obj['unchanged_emulator_tx_hash'] = unchanged_emulator_tx_hash
+                        warn_obj['unchanged_emulator_tx_hash'] = hex_to_b64(unchanged_emulator_tx_hash)
+                    if unchanged_emulator_tx_hash_match is not None:
+                        warn_obj['unchanged_emulator_tx_hash_match'] = unchanged_emulator_tx_hash_match
+                    if unchanged_emulator_account_hash is not None:
+                        warn_obj['unchanged_emulator_account_hash'] = unchanged_emulator_account_hash
+                    if changed_emulator_account_hash is not None:
+                        warn_obj['changed_emulator_account_hash'] = changed_emulator_account_hash
                     out.append(warn_obj)
         return go_as_success, out
 
