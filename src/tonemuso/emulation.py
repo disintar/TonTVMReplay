@@ -126,20 +126,19 @@ class TxStepEmulator:
         self.use_boc_for_diff: bool = bool(use_boc_for_diff)
 
     # ---- Small helpers to keep emulate() readable ----
-    def _prepare_in_msg(self, tx: Dict[str, Any], override_in_msg: Optional[Cell]) -> Tuple[
+    def _prepare_in_msg(self, tx: Dict[str, Any]) -> Tuple[
         Optional[Cell], int, int, bool]:
         lt = tx['lt']
         now = tx['now']
-        is_tock = tx['is_tock'] if override_in_msg is None else False
-        if override_in_msg is not None:
-            in_msg = override_in_msg
+        is_tock = tx['is_tock']
+
+        current_tx_cs = tx['tx'].begin_parse()
+        tmp = current_tx_cs.load_ref(as_cs=True)
+        if tmp.load_bool():
+            in_msg = tmp.load_ref()
         else:
-            current_tx_cs = tx['tx'].begin_parse()
-            tmp = current_tx_cs.load_ref(as_cs=True)
-            if tmp.load_bool():
-                in_msg = tmp.load_ref()
-            else:
-                in_msg = None
+            in_msg = None
+
         return in_msg, lt, now, is_tock
 
     def _run_primary(self, in_msg: Optional[Cell], now: int, lt: int, is_tock: bool) -> bool:
@@ -154,15 +153,13 @@ class TxStepEmulator:
             return self.em2.emulate_tick_tock_transaction(self.state2, is_tock, now, lt)
         return self.em2.emulate_transaction(self.state2, in_msg, now, lt)
 
-
     def _extract_account_code_hash(self):
         try:
             sa = self.em2.account.to_cell()
             sa_o = ShardAccount()
-            return  sa_o.cell_unpack(sa, True).account.storage.state.x.code.value.get_hash()
+            return sa_o.cell_unpack(sa, True).account.storage.state.x.code.value.get_hash()
         except Exception as e:
             return 'UNKNOWN'
-
 
     def _compare_and_color(self, tx: Dict[str, Any]) -> Tuple[bool, List[Dict[str, Any]]]:
         out: List[Dict[str, Any]] = []
@@ -266,7 +263,8 @@ class TxStepEmulator:
                         'mode': 'warning',
                         'diff': {
                             'transaction': make_json_dumpable(diff_dict),
-                            'account': account_diff_dict.get('data', None) if isinstance(account_diff_dict, dict) else None,
+                            'account': account_diff_dict.get('data', None) if isinstance(account_diff_dict,
+                                                                                         dict) else None,
                         },
                         'account_code_hash': account_code_hash,
                     }
@@ -296,7 +294,7 @@ class TxStepEmulator:
             extract_out_msgs: bool = False
     ) -> Tuple[List[Dict[str, Any]], Cell, Optional[Cell], Optional[Dict[str, Any]]]:
         # Prepare
-        in_msg, lt, now, is_tock = self._prepare_in_msg(tx, override_in_msg)
+        orig_in_msg, lt, now, is_tock = self._prepare_in_msg(tx)
 
         if self.loglevel > 4:
             if override_in_msg is None:
@@ -305,9 +303,10 @@ class TxStepEmulator:
                 logger.debug(f"Start tx (override in_msg): {lt}, {now}")
 
         # Primary
-        success1 = self._run_primary(in_msg, now, lt, is_tock)
+        success1 = self._run_primary(override_in_msg if override_in_msg is not None else orig_in_msg,
+                                     now, lt, is_tock)
         # Secondary (always)
-        success2 = self._run_secondary(in_msg, now, lt, is_tock)
+        success2 = self._run_secondary(orig_in_msg, now, lt, is_tock)
 
         if self.loglevel > 4:
             logger.debug(
